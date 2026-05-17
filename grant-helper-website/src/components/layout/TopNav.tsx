@@ -10,7 +10,6 @@ interface TopNavProps {
 const viewTitles: Record<string, string> = {
   profile: 'Organization Profile',
   search: 'Find Grants',
-  workspace: 'Grant Workspace',
 };
 
 export default function TopNav({ currentView, onNavigate }: TopNavProps) {
