@@ -4,12 +4,7 @@ import ProfileView from './components/pages/ProfileView';
 import SearchView from './components/pages/SearchView';
 import WorkspaceView from './components/pages/WorkspaceView';
 import AuthPage from './components/pages/AuthPage';
-import {
-  // ensureOrganizationProfileRow,
-  getUserDocuments,
-  // saveOrganizationProfileText,
-  type UserDocumentRow,
-} from './config/supabase';
+// ProfileView loads documents and profile from Supabase / localStorage directly.
 import { useSupabaseAuth } from './hooks/useSupabaseAuth';
 import './App.css';
 
@@ -35,7 +30,6 @@ function App() {
   // organizationProfile now managed via localStorage by ProfileView
   // SearchView and WorkspaceView read it directly from localStorage
   const [profileReady, setProfileReady] = useState(() => !supabaseConfigured);
-  const [userDocuments, setUserDocuments] = useState<UserDocumentRow[]>([]);
 
   // useEffect(() => {
   //   if (typeof window === 'undefined') return;
@@ -53,35 +47,7 @@ function App() {
       return;
     }
 
-    if (!session?.user) {
-      setUserDocuments([]);
-      setProfileReady(false);
-      return;
-    }
-
-    let cancelled = false;
-    setProfileReady(false);
-
-    (async () => {
-      try {
-        // await ensureOrganizationProfileRow(session.user.id);
-        const docs = await getUserDocuments(session.user.id);
-        if (cancelled) return;
-        // setOrganizationProfile(row?.organization_profile ?? '');
-        setUserDocuments(docs);
-      } catch (e) {
-        console.warn('Failed to load organization profile', e);
-        if (!cancelled) {
-          setUserDocuments([]);
-        }
-      } finally {
-        if (!cancelled) setProfileReady(true);
-      }
-    })();
-
-    return () => {
-      cancelled = true;
-    };
+    setProfileReady(!!session?.user);
   }, [session, supabaseConfigured]);
 
   // useEffect(() => {
@@ -120,21 +86,13 @@ function App() {
   const renderView = () => {
     switch (activeView) {
       case 'profile':
-        return (
-          <ProfileView
-            userDocuments={userDocuments}
-          />
-        );
+        return <ProfileView />;
       case 'search':
         return <SearchView />;
       case 'workspace':
         return <WorkspaceView />;
       default:
-        return (
-          <ProfileView
-            userDocuments={userDocuments}
-          />
-        );
+        return <ProfileView />;
     }
   };
 
