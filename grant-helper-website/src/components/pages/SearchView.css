@@ -309,12 +309,32 @@
   align-items: center;
   justify-content: center;
   padding: 1rem;
+  box-sizing: border-box;
   background: rgba(0, 0, 0, 0.4);
   backdrop-filter: blur(4px);
 }
 
+.search-chat-wrap {
+  width: 50%;
+  max-width: calc(100% - 2rem);
+  max-height: calc(100vh - 2rem);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  box-sizing: border-box;
+}
+
 .search-chat-overlay .grant-chat {
-  max-height: 85vh;
+  max-height: min(85vh, calc(100vh - 2rem));
+  width: 100%;
+  flex: 1;
+  min-height: 0;
+}
+
+@media (max-width: 640px) {
+  .search-chat-wrap {
+    width: min(92vw, 100%);
+  }
 }
 
 .search-feature-grid {

@@ -28,7 +28,7 @@ function App() {
   const { session, loading: authLoading, supabaseConfigured } = useSupabaseAuth();
   const [activeView, setActiveView] = useState('profile');
   // organizationProfile now managed via localStorage by ProfileView
-  // SearchView and WorkspaceView read it directly from localStorage
+  // SearchView reads organization profile from localStorage
   const [profileReady, setProfileReady] = useState(() => !supabaseConfigured);
 
   // useEffect(() => {
