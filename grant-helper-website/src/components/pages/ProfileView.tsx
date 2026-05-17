@@ -138,7 +138,7 @@ const SUCCESS_STORIES = [
 ];
 
 interface ProfileViewProps {
-  organizationProfile: string;
+  organizationProfile?: string;
   onOrganizationProfileChange?: (value: string) => void;
 }
 
@@ -151,8 +151,14 @@ type SavedDocument = {
   status?: string | null;
 };
 
-export default function ProfileView({ organizationProfile, onOrganizationProfileChange,
+export default function ProfileView({
+  organizationProfile: profileProp,
+  onOrganizationProfileChange,
 }: ProfileViewProps) {
+  const organizationProfile =
+    profileProp ??
+    (typeof window !== 'undefined' ? window.localStorage.getItem(PROFILE_STORAGE_KEY) : '') ??
+    '';
   const [showUpload, setShowUpload] = useState(false);
   const [files, setFiles] = useState<UploadedFile[]>([]);
   const [dragging, setDragging] = useState(false);
