@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import Layout from './components/layout/Layout';
 import ProfileView from './components/pages/ProfileView';
 import SearchView from './components/pages/SearchView';
@@ -29,26 +29,7 @@ function App() {
   const [activeView, setActiveView] = useState('profile');
   // organizationProfile now managed via localStorage by ProfileView
   // SearchView reads organization profile from localStorage
-  const [profileReady, setProfileReady] = useState(() => !supabaseConfigured);
-
-  // useEffect(() => {
-  //   if (typeof window === 'undefined') return;
-
-  //   window.localStorage.setItem(PROFILE_STORAGE_KEY, organizationProfile);
-  //   window.localStorage.setItem(
-  //     PROFILE_SUMMARY_STORAGE_KEY,
-  //     JSON.stringify(buildProfileSummary(organizationProfile))
-  //   );
-  // }, [organizationProfile]);
-
-  useEffect(() => {
-    if (!supabaseConfigured) {
-      setProfileReady(true);
-      return;
-    }
-
-    setProfileReady(!!session?.user);
-  }, [session, supabaseConfigured]);
+  const profileReady = !supabaseConfigured || !!session?.user;
 
   // useEffect(() => {
   //   if (!supabaseConfigured || !session?.user || !profileReady) return;
