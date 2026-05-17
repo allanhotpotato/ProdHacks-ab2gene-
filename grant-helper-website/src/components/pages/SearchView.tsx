@@ -1,5 +1,5 @@
-import { useState } from 'react';
-import { searchOpportunities, getOpportunityUrl, buildGrantContext, type GrantsGovOpportunity } from '../../api/grantsGov';
+import { useMemo, useState } from 'react';
+import { searchOpportunities, getOpportunityUrl, buildGrantContext, isGrantApiConfigured, type GrantsGovOpportunity } from '../../api/grantsGov';
 import GrantChat from '../chat/GrantChat';
 import './EmptyState.css';
 import './SearchView.css';
@@ -8,23 +8,162 @@ interface SearchViewProps {
   organizationProfile?: string;
 }
 
+const STOP_WORDS = new Set([
+  'about', 'after', 'again', 'agency', 'all', 'also', 'among', 'and', 'application', 'article', 'articles',
+  'because', 'been', 'before', 'being', 'board', 'business', 'charitable', 'community', 'corporation',
+  'directors', 'document', 'education', 'entity', 'exclusively', 'executed', 'following', 'formed', 'forming',
+  'foundation', 'grant', 'grants', 'have', 'including', 'incorporation', 'information', 'initiative', 'initiatives',
+  'laws', 'name', 'nonprofit', 'office', 'organization', 'organizational', 'other', 'our', 'over', 'people',
+  'program', 'programs', 'project', 'purpose', 'purposes', 'service', 'services', 'shall', 'that', 'their',
+  'these', 'this', 'those', 'under', 'upon', 'were', 'which', 'with', 'within', 'youth',
+  'address', 'street', 'avenue', 'road', 'drive', 'lane', 'court', 'boulevard', 'suite',
+  'owner', 'founder', 'registered', 'agent', 'phone', 'email', 'contact', 'maple',
+  'samantha', 'pittsburgh', 'springfield'
+]);
+
+function normalizeText(value: string): string {
+  return value
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function extractProfileKeywords(profile: string): string[] {
+  const scrubbed = profile
+    .replace(/owner\s*\/\s*founder:\s*name:\s*[^\n.]*/gi, ' ')
+    .replace(/founder:\s*name:\s*[^\n.]*/gi, ' ')
+    .replace(/owner:\s*name:\s*[^\n.]*/gi, ' ')
+    .replace(/registered agent:\s*name:\s*[^\n.]*/gi, ' ')
+    .replace(/contact information:\s*[^]+?(?=(?:\d+\.|$))/gi, ' ')
+    .replace(/email:\s*[^\s]+/gi, ' ')
+    .replace(/phone:\s*[\d(). -]+/gi, ' ')
+    .replace(/\b\d{5}(?:-\d{4})?\b/g, ' ')
+    .replace(/\b\d+\b/g, ' ');
+  const normalized = normalizeText(scrubbed);
+  if (!normalized) {
+    return [];
+  }
+
+  const phraseHints = [
+    'community outreach',
+    'youth mentorship',
+    'public service',
+    'educational purposes',
+    'mental health',
+    'food security',
+    'housing stability',
+    'arts education',
+    'college access',
+    'workforce development',
+    'violence prevention',
+    'family support',
+    'environmental justice'
+  ];
+
+  const phraseMatches = phraseHints.filter((phrase) => normalized.includes(phrase));
+  const counts = new Map<string, number>();
+
+  normalized.split(' ').forEach((word) => {
+    if (word.length < 4 || STOP_WORDS.has(word) || /^\d+$/.test(word)) {
+      return;
+    }
+    counts.set(word, (counts.get(word) || 0) + 1);
+  });
+
+  const rankedWords = Array.from(counts.entries())
+    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+    .map(([word]) => word);
+
+  return Array.from(new Set([...phraseMatches, ...rankedWords])).slice(0, 8);
+}
+
+function buildRecommendedQuery(profile: string): string {
+  const keywords = extractProfileKeywords(profile).slice(0, 4);
+  return keywords.length ? keywords.join(' ') : 'nonprofit education community services';
+}
+
+function scoreOpportunityAgainstProfile(opportunity: GrantsGovOpportunity, profileKeywords: string[]): number {
+  if (!profileKeywords.length) {
+    return 0;
+  }
+
+  const blob = normalizeText([
+    opportunity.opportunity_title,
+    opportunity.opportunity_number,
+    opportunity.summary?.summary_description,
+    Array.isArray((opportunity as Record<string, unknown>).applicant_types)
+      ? ((opportunity as Record<string, unknown>).applicant_types as string[]).join(' ')
+      : ''
+  ].filter(Boolean).join(' '));
+
+  let score = 0;
+  profileKeywords.forEach((keyword) => {
+    const normalizedKeyword = normalizeText(keyword);
+    if (!normalizedKeyword) {
+      return;
+    }
+
+    if (blob.includes(normalizedKeyword)) {
+      score += normalizedKeyword.includes(' ') ? 3 : 2;
+    } else {
+      const keywordParts = normalizedKeyword.split(' ');
+      const partialMatches = keywordParts.filter((part) => blob.includes(part)).length;
+      score += partialMatches * 0.75;
+    }
+  });
+
+  return Number(score.toFixed(2));
+}
+
+function sortByProfileFit(opportunities: GrantsGovOpportunity[], profileKeywords: string[]): GrantsGovOpportunity[] {
+  return [...opportunities].sort((a, b) => {
+    const scoreA = scoreOpportunityAgainstProfile(a, profileKeywords);
+    const scoreB = scoreOpportunityAgainstProfile(b, profileKeywords);
+    if (scoreB !== scoreA) {
+      return scoreB - scoreA;
+    }
+    return String(a.summary?.close_date || '').localeCompare(String(b.summary?.close_date || ''));
+  });
+}
+
 export default function SearchView({ organizationProfile = '' }: SearchViewProps) {
   const [query, setQuery] = useState('education');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [opportunities, setOpportunities] = useState<GrantsGovOpportunity[]>([]);
   const [selectedOpportunity, setSelectedOpportunity] = useState<GrantsGovOpportunity | null>(null);
+  const [lastSearchLabel, setLastSearchLabel] = useState('');
 
-  const handleSearch = async () => {
+  const profileKeywords = useMemo(() => extractProfileKeywords(organizationProfile), [organizationProfile]);
+  const recommendedQuery = useMemo(() => buildRecommendedQuery(organizationProfile), [organizationProfile]);
+  const hasProfile = organizationProfile.trim().length > 0;
+  const grantApiConfigured = isGrantApiConfigured();
+
+  const runSearch = async (mode: 'manual' | 'recommended') => {
     setLoading(true);
     setError(null);
     setOpportunities([]);
+
+    if (!grantApiConfigured) {
+      setError('Grant search is not configured yet. Add VITE_GRANT_API to grant-helper-website/.env, then restart the frontend.');
+      setLoading(false);
+      return;
+    }
+
+    const baseQuery = mode === 'recommended'
+      ? recommendedQuery
+      : (query.trim() || recommendedQuery);
+
     try {
       const result = await searchOpportunities({
-        query: query.trim() || 'education',
-        pagination: { page_offset: 1, page_size: 10 },
+        query: baseQuery,
+        pagination: { page_offset: 1, page_size: 12 },
       });
-      setOpportunities(result.data ?? []);
+
+      const sorted = sortByProfileFit(result.data ?? [], profileKeywords);
+      setOpportunities(sorted);
+      setLastSearchLabel(baseQuery);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Search failed');
     } finally {
@@ -38,7 +177,7 @@ export default function SearchView({ organizationProfile = '' }: SearchViewProps
       <h2 className="empty-state-title">Discover Grants Tailored to Your Mission</h2>
       <p className="empty-state-description">
         Search through thousands of grant opportunities matched to your organization's
-        profile. Our AI helps you find grants with the highest likelihood of success.
+        uploaded profile. Results are now re-ranked using the mission, activities, and themes found in your documents.
       </p>
 
       <div className="search-bar">
@@ -48,18 +187,44 @@ export default function SearchView({ organizationProfile = '' }: SearchViewProps
           placeholder="e.g. education, health, research"
           value={query}
           onChange={(e) => setQuery(e.target.value)}
-          onKeyDown={(e) => e.key === 'Enter' && handleSearch()}
-          disabled={loading}
+          onKeyDown={(e) => e.key === 'Enter' && runSearch('manual')}
+          disabled={loading || !grantApiConfigured}
         />
         <button
           type="button"
           className="btn-primary"
-          onClick={handleSearch}
-          disabled={loading}
+          onClick={() => runSearch('manual')}
+          disabled={loading || !grantApiConfigured}
         >
           {loading ? 'Searching…' : 'Start Searching'}
         </button>
       </div>
+
+      <div className="profile-insight-card">
+        <h3 className="profile-insight-title">Profile-driven recommendations</h3>
+        {hasProfile ? (
+          <>
+            <p className="profile-insight-copy">
+              Recommended search based on uploaded documents: <strong>{recommendedQuery}</strong>
+            </p>
+            <div className="keyword-chip-row">
+              {profileKeywords.slice(0, 6).map((keyword) => (
+                <span key={keyword} className="keyword-chip">{keyword}</span>
+              ))}
+            </div>
+          </>
+        ) : (
+          <p className="profile-insight-copy">
+            Upload organization documents in Profile first to unlock tailored search terms and better matching.
+          </p>
+        )}
+      </div>
+
+      {!grantApiConfigured && (
+        <div className="search-config-card" role="status">
+          Add <code>VITE_GRANT_API=your_key</code> to <code>grant-helper-website/.env</code>, then restart the frontend to enable live grant search.
+        </div>
+      )}
 
       {error && (
         <div className="search-error" role="alert">
@@ -87,17 +252,25 @@ export default function SearchView({ organizationProfile = '' }: SearchViewProps
 
       {opportunities.length > 0 && (
         <div className="search-results">
-          <h3 className="search-results-title">Found {opportunities.length} opportunities</h3>
+          <h3 className="search-results-title">
+            Found {opportunities.length} opportunities
+            {lastSearchLabel ? ` for "${lastSearchLabel}"` : ''}
+          </h3>
           <ul className="opportunity-list">
             {opportunities.map((opp, i) => {
               const url = getOpportunityUrl(opp);
+              const fitScore = scoreOpportunityAgainstProfile(opp, profileKeywords);
               const content = (
                 <>
                   <strong className="opportunity-title">{opp.opportunity_title}</strong>
                   <div className="opportunity-meta">
                     {opp.summary?.post_date && <span>Posted: {opp.summary.post_date}</span>}
                     <span>Closes: {opp.summary?.close_date ?? 'No deadline'}</span>
+                    {fitScore > 0 && <span>Profile fit: {fitScore.toFixed(1)}</span>}
                   </div>
+                  {opp.summary?.summary_description && (
+                    <p className="opportunity-description">{opp.summary.summary_description}</p>
+                  )}
                   {url && <span className="opportunity-link-hint">View on Grants.gov →</span>}
                 </>
               );
@@ -132,8 +305,8 @@ export default function SearchView({ organizationProfile = '' }: SearchViewProps
         <button
           type="button"
           className="btn-secondary"
-          onClick={handleSearch}
-          disabled={loading}
+          onClick={() => runSearch('recommended')}
+          disabled={loading || !grantApiConfigured}
         >
           View Recommended
         </button>
@@ -142,23 +315,23 @@ export default function SearchView({ organizationProfile = '' }: SearchViewProps
       <div className="feature-grid">
         <div className="feature-card">
           <div className="feature-icon">🤖</div>
-          <h3 className="feature-title">AI-Powered Matching</h3>
+          <h3 className="feature-title">Profile-Aware Matching</h3>
           <p className="feature-text">
-            Smart algorithms match your profile to the most relevant grant opportunities.
+            Uploaded-document themes now influence search terms and result ranking.
           </p>
         </div>
         <div className="feature-card">
           <div className="feature-icon">⚡</div>
-          <h3 className="feature-title">Real-Time Updates</h3>
+          <h3 className="feature-title">Faster Shortlisting</h3>
           <p className="feature-text">
-            Get notified about new grants and upcoming deadlines that match your criteria.
+            Prioritize grants that align more closely with your mission and activities.
           </p>
         </div>
         <div className="feature-card">
           <div className="feature-icon">📊</div>
-          <h3 className="feature-title">Success Insights</h3>
+          <h3 className="feature-title">Better Context</h3>
           <p className="feature-text">
-            See success rates and competition levels for each grant opportunity.
+            Use the same uploaded profile for search, grant Q&A, and extension autofill.
           </p>
         </div>
       </div>
