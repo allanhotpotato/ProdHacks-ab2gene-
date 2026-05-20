@@ -122,6 +122,127 @@ interface AutofillFieldRequestBody {
   userId?: unknown;
 }
 
+function getFieldSpecificGuidance(fieldKey: string): string {
+  switch (fieldKey) {
+    case 'contact_name':
+      return 'Expect a full person name. If only one name token is known, leave blank instead of inventing the rest.';
+    case 'first_name':
+      return 'Expect only the given name of a person.';
+    case 'last_name':
+      return 'Expect only the family name of a person. Do not use street, address, role, or organization words.';
+    case 'job_title':
+      return 'Expect a short professional role such as Executive Director or Program Manager. Leave blank if not explicit.';
+    case 'email':
+      return 'Expect a valid email address only. Confirmation and re-entry email fields should reuse that same address.';
+    case 'phone':
+    case 'mobile_phone':
+      return 'Expect a phone number only. Return digits or standard US formatting, not address text.';
+    case 'website':
+      return 'Expect an organization website URL or domain only.';
+    case 'address_line_1':
+      return 'Expect the street portion of an address only, not city/state/zip.';
+    case 'address_line_2':
+      return 'Expect only suite, unit, apartment, or secondary address information.';
+    case 'city':
+      return 'Expect a city or locality only, with no digits.';
+    case 'state':
+      return 'Expect a state or province only, typically a two-letter US abbreviation when applicable.';
+    case 'zip':
+      return 'Expect only a ZIP or postal code.';
+    case 'country':
+      return 'Expect only a country name.';
+    case 'organization_name':
+      return 'Expect the legal or common organization name only.';
+    case 'project_title':
+      return 'Expect a short, descriptive project or program title. If not explicit, you may synthesize a truthful title grounded in the mission and activities.';
+    case 'need_statement':
+      return 'Explain the specific problem, why it matters now, and why funding is needed. Use full sentences and make the urgency clear without exaggeration.';
+    case 'target_population':
+      return 'Explain who benefits, how the organization identifies them, and how it reaches or recruits them. Use full sentences, not a short fragment.';
+    case 'organizational_capacity':
+      return 'Explain what makes the organization or program effective compared with other approaches. Use full sentences and cite relevant strengths from the context.';
+    case 'mission_statement':
+    case 'organization_description':
+    case 'organization_history':
+    case 'project_summary':
+    case 'project_abstract':
+    case 'project_goals':
+    case 'geographic_area_served':
+    case 'program_description':
+    case 'impact_statement':
+    case 'outcomes':
+    case 'evaluation_plan':
+    case 'sustainability_plan':
+    case 'implementation_timeline':
+    case 'methods_approach':
+    case 'staffing_plan':
+    case 'partnerships':
+    case 'dei_statement':
+    case 'financial_need':
+    case 'board_governance':
+    case 'success_metrics':
+      return 'This is a narrative-style field. Draft a polished, professional response in full sentences. Address every part of the question, not just the opening phrase, and expand enough to be useful in a grant application.';
+    default:
+      return '';
+  }
+}
+
+function extractMinimumWordCount(text: string): number {
+  const normalized = String(text || '').toLowerCase();
+  if (!normalized) {
+    return 0;
+  }
+
+  const patterns = [
+    /(\d+)\s*words?\s*(?:minimum|min\b)/i,
+    /(?:minimum|min\b)\s*(?:of\s*)?(\d+)\s*words?/i,
+    /at\s+least\s+(\d+)\s*words?/i
+  ];
+
+  for (const pattern of patterns) {
+    const match = normalized.match(pattern);
+    if (match) {
+      const count = Number(match[1]);
+      if (Number.isFinite(count) && count > 0) {
+        return count;
+      }
+    }
+  }
+
+  return 0;
+}
+
+function isNarrativeAutofillField(fieldKey: string, tagName: string): boolean {
+  const narrativeKeys = new Set([
+    'project_title',
+    'project_summary',
+    'project_abstract',
+    'project_goals',
+    'need_statement',
+    'target_population',
+    'geographic_area_served',
+    'mission_statement',
+    'organization_description',
+    'organization_history',
+    'program_description',
+    'impact_statement',
+    'outcomes',
+    'evaluation_plan',
+    'sustainability_plan',
+    'implementation_timeline',
+    'methods_approach',
+    'staffing_plan',
+    'partnerships',
+    'dei_statement',
+    'financial_need',
+    'organizational_capacity',
+    'board_governance',
+    'success_metrics'
+  ]);
+
+  return tagName === 'textarea' || narrativeKeys.has(fieldKey);
+}
+
 function buildSystemInstruction(
   grantContext: string,
   retrievedDocumentChunks?: string
@@ -441,6 +562,9 @@ async function generateAutofillAnswer(options: {
     };
   }
 
+  const minimumWordCount = extractMinimumWordCount(questionText);
+  const isNarrativeField = isNarrativeAutofillField(fieldKey, tagName);
+
   const instructions = `${RAG_SYSTEM_INSTRUCTION}
 
 You are generating one auto-fill value for a grant portal field.
@@ -450,8 +574,22 @@ Return strict JSON only with keys: normalizedFieldKey, answer, confidence, ratio
 - rationale should be one short sentence.
 - answer should be ready to paste into the field.
 - For short text inputs, keep the answer short.
-- For textarea questions, answer in one concise paragraph.
-- If the field should not be auto-filled or the context is insufficient, return answer as an empty string and confidence as low.`;
+- For textarea questions, answer in full sentences and address every part of the prompt.
+- When the question asks multiple things, cover each one clearly in the same answer.
+- For narrative questions, draft a reasonable, grant-ready answer grounded in the organization context even when the exact wording is not explicit.
+- For narrative questions, prefer 2-5 complete sentences unless the prompt clearly needs something longer.
+- If the prompt includes a minimum word count, meet or slightly exceed it.
+- Do not guess a person's first or last name from an organization name.
+- For factual identity fields, only answer if the value is explicitly present in context.
+- Treat contact, email, phone, website, address, city, state, zip, country, EIN, UEI, DUNS, and job title as factual fields.
+- You may only synthesize new wording for narrative fields and project_title.
+- If fieldKey is project_title and the organization context clearly describes a program or mission but no explicit title exists, you may create a short, truthful 3-8 word title grounded in that mission.
+- If the field asks to confirm or re-enter an email/phone value, return the same explicit factual value only if it is present in context.
+- If the field should not be auto-filled or the context is insufficient, return answer as an empty string and confidence as low.
+- For factual fields, if you are unsure, leave the answer blank.
+- For narrative fields, do not leave the answer blank unless the organization context is truly too thin to write a truthful draft.`;
+
+  const fieldSpecificGuidance = getFieldSpecificGuidance(fieldKey);
 
   const prompt = `Field key guess: ${fieldKey || 'unknown'}
 Field question or label:
@@ -471,6 +609,15 @@ ${pageUrl || 'n/a'}
 
 Grant context:
 ${grantContext || 'n/a'}
+
+Field-specific guidance:
+${fieldSpecificGuidance || 'No additional guidance.'}
+
+Narrative field:
+${isNarrativeField ? 'yes' : 'no'}
+
+Minimum word count:
+${minimumWordCount > 0 ? minimumWordCount : 'none specified'}
 
 Organization profile context:
 ${organizationContext}

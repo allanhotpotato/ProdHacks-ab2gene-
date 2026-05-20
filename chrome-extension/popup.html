@@ -8,6 +8,35 @@
   </head>
   <body>
     <main class="popup">
+      <section class="panel-card auth-shell">
+        <div id="auth-logged-out" class="auth-panel">
+          <p class="section-label">Extension Login</p>
+          <p class="section-copy">Use the same email and password you use on the GrantFlow website.</p>
+          <form id="login-form" class="auth-form">
+            <label class="auth-field">
+              <span>Email</span>
+              <input id="login-email" type="email" autocomplete="username" placeholder="you@organization.org" required />
+            </label>
+            <label class="auth-field">
+              <span>Password</span>
+              <input id="login-password" type="password" autocomplete="current-password" placeholder="Password" required />
+            </label>
+            <button id="login-button" type="submit">Log in to extension</button>
+          </form>
+        </div>
+
+        <div id="auth-logged-in" class="auth-panel auth-panel--hidden">
+          <p class="section-label">Extension Login</p>
+          <div class="auth-session-row">
+            <div>
+              <p class="auth-session-title">Signed in with your GrantFlow account</p>
+              <p id="auth-session-email" class="field-meta">Account connected</p>
+            </div>
+            <button id="logout-button" type="button" class="secondary-button auth-logout-button">Log out</button>
+          </div>
+        </div>
+      </section>
+
       <section class="hero-card">
         <p class="eyebrow">GrantFlow Extension</p>
         <h1>Grant Application Assistant</h1>

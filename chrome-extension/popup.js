@@ -5,6 +5,14 @@ const autofillButton = document.getElementById("autofill-button");
 const openPlatformButton = document.getElementById("open-platform-button");
 const connectPlatformButton = document.getElementById("connect-platform-button");
 const profileSummaryNode = document.getElementById("profile-summary");
+const loginForm = document.getElementById("login-form");
+const loginEmailInput = document.getElementById("login-email");
+const loginPasswordInput = document.getElementById("login-password");
+const loginButton = document.getElementById("login-button");
+const logoutButton = document.getElementById("logout-button");
+const authLoggedOutNode = document.getElementById("auth-logged-out");
+const authLoggedInNode = document.getElementById("auth-logged-in");
+const authSessionEmailNode = document.getElementById("auth-session-email");
 
 const PLATFORM_URL_STORAGE_KEY = "grantflow.extension.platformUrl";
 const BACKEND_URL_STORAGE_KEY = "grantflow.extension.backendUrl";
@@ -12,6 +20,7 @@ const PLATFORM_PROFILE_STORAGE_KEY = "grantflow.extension.profileSummary";
 const PLATFORM_PROFILE_TEXT_STORAGE_KEY = "grantflow.extension.profileText";
 const PLATFORM_USER_ID_STORAGE_KEY = "grantflow.extension.userId";
 const PLATFORM_ACCESS_TOKEN_STORAGE_KEY = "grantflow.extension.accessToken";
+const PLATFORM_USER_EMAIL_STORAGE_KEY = "grantflow.extension.userEmail";
 const PLATFORM_DOCUMENT_NAMES_STORAGE_KEY = "grantflow.extension.documentNames";
 const STRUCTURED_PROFILE_STORAGE_KEY = "grantflow.extension.structuredProfile";
 const PROFILE_STORAGE_KEY = "grantflow.organizationProfile";
@@ -20,6 +29,8 @@ const USER_ID_STORAGE_KEY = "grantflow.userId";
 const SAVED_DOCUMENTS_STORAGE_KEY = "grantflow.savedDocuments";
 const DEFAULT_PLATFORM_URL = "https://grantflowab2gene.vercel.app";
 const DEFAULT_BACKEND_URL = "https://grantflowab2gene.vercel.app";
+const SUPABASE_URL = "https://rybedqeusxktutikqwoz.supabase.co";
+const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InJ5YmVkcWV1c3hrdHV0aWtxd296Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzE1NDkxMzMsImV4cCI6MjA4NzEyNTEzM30.ViRFZMfPzyNfGyPMsYB1LWuJENuJeXkt8zsU5x5jN2M";
 
 let lastScanPayload = null;
 
@@ -41,9 +52,69 @@ function setStatusState(state) {
 
 function updateFlowState(options = {}) {
   const hasConnectedProfile = Boolean(options.hasConnectedProfile);
+  const isAuthenticated = Boolean(options.isAuthenticated);
 
   autofillButton.disabled = !hasConnectedProfile;
-  connectPlatformButton.textContent = hasConnectedProfile ? "Sync Again" : "Connect & Sync";
+  connectPlatformButton.textContent = hasConnectedProfile ? "Sync Again" : (isAuthenticated ? "Sync Account" : "Connect & Sync");
+}
+
+function renderAuthState({ isAuthenticated, email = "" }) {
+  authLoggedOutNode.classList.toggle("auth-panel--hidden", isAuthenticated);
+  authLoggedInNode.classList.toggle("auth-panel--hidden", !isAuthenticated);
+  authSessionEmailNode.textContent = isAuthenticated
+    ? (email ? `Signed in as ${email}` : "Signed in and ready to sync")
+    : "";
+  loginButton.disabled = false;
+  logoutButton.disabled = false;
+}
+
+async function clearExtensionSession() {
+  await chrome.storage.local.remove([
+    PLATFORM_PROFILE_STORAGE_KEY,
+    PLATFORM_PROFILE_TEXT_STORAGE_KEY,
+    PLATFORM_USER_ID_STORAGE_KEY,
+    PLATFORM_ACCESS_TOKEN_STORAGE_KEY,
+    PLATFORM_USER_EMAIL_STORAGE_KEY,
+    PLATFORM_DOCUMENT_NAMES_STORAGE_KEY,
+    STRUCTURED_PROFILE_STORAGE_KEY
+  ]);
+  renderProfileSummary([]);
+}
+
+async function signInWithGrantFlow(email, password) {
+  const response = await fetch(`${SUPABASE_URL}/auth/v1/token?grant_type=password`, {
+    method: "POST",
+    headers: {
+      apikey: SUPABASE_ANON_KEY,
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({ email, password })
+  });
+
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(data.error_description || data.msg || data.error || `Login failed: ${response.status}`);
+  }
+
+  return {
+    userId: data.user?.id || "",
+    accessToken: data.access_token || "",
+    email: data.user?.email || email
+  };
+}
+
+async function signOutOfGrantFlow(accessToken) {
+  if (!accessToken) {
+    return;
+  }
+
+  await fetch(`${SUPABASE_URL}/auth/v1/logout`, {
+    method: "POST",
+    headers: {
+      apikey: SUPABASE_ANON_KEY,
+      Authorization: `Bearer ${accessToken}`
+    }
+  }).catch(() => null);
 }
 
 function toOrigin(url) {
@@ -54,15 +125,41 @@ function toOrigin(url) {
   }
 }
 
+function isLocalDevelopmentUrl(url) {
+  const origin = toOrigin(url);
+  return origin.includes("localhost:") || origin.includes("127.0.0.1:");
+}
+
+function normalizeConfiguredUrl(url, fallbackUrl) {
+  const origin = toOrigin(url);
+  if (!origin) {
+    return fallbackUrl;
+  }
+  return origin;
+}
+
 async function getSavedUrls() {
   const saved = await chrome.storage.local.get([
     PLATFORM_URL_STORAGE_KEY,
     BACKEND_URL_STORAGE_KEY
   ]);
 
+  const platformUrl = normalizeConfiguredUrl(saved[PLATFORM_URL_STORAGE_KEY], DEFAULT_PLATFORM_URL);
+  const backendUrl = normalizeConfiguredUrl(saved[BACKEND_URL_STORAGE_KEY], DEFAULT_BACKEND_URL);
+
+  if (
+    platformUrl !== saved[PLATFORM_URL_STORAGE_KEY] ||
+    backendUrl !== saved[BACKEND_URL_STORAGE_KEY]
+  ) {
+    await chrome.storage.local.set({
+      [PLATFORM_URL_STORAGE_KEY]: platformUrl,
+      [BACKEND_URL_STORAGE_KEY]: backendUrl
+    });
+  }
+
   return {
-    platformUrl: saved[PLATFORM_URL_STORAGE_KEY] || DEFAULT_PLATFORM_URL,
-    backendUrl: saved[BACKEND_URL_STORAGE_KEY] || ""
+    platformUrl,
+    backendUrl
   };
 }
 
@@ -76,22 +173,32 @@ function isLikelyGrantFlowTab(tab) {
   return (
     title.includes("grantflow") ||
     url.includes("grantflow") ||
+    url.includes("localhost:5173") ||
     url.includes("vercel.app") ||
-    url.includes("grantflowab2gene.vercel.app") ||
-    url.includes("localhost:5173")
+    url.includes("grantflowab2gene.vercel.app")
   );
 }
 
 async function resolvePlatformAndBackendUrls() {
   const saved = await getSavedUrls();
   const tabs = await chrome.tabs.query({});
-  const preferredTab = tabs.find((tab) => {
+  const exactMatchTab = tabs.find((tab) => {
     const origin = toOrigin(tab.url || "");
-    return origin && (origin === saved.platformUrl || isLikelyGrantFlowTab(tab));
+    return origin && origin === saved.platformUrl;
   });
 
-  const platformUrl = preferredTab?.url ? toOrigin(preferredTab.url) : saved.platformUrl || DEFAULT_PLATFORM_URL;
-  const backendUrl = saved.backendUrl || platformUrl || DEFAULT_BACKEND_URL;
+  const deployedTab = tabs.find((tab) => {
+    const origin = toOrigin(tab.url || "");
+    return origin === DEFAULT_PLATFORM_URL;
+  });
+
+  const fallbackGrantFlowTab = tabs.find((tab) => isLikelyGrantFlowTab(tab));
+
+  const chosenTab = exactMatchTab || deployedTab || fallbackGrantFlowTab || null;
+  const platformUrl = chosenTab?.url
+    ? normalizeConfiguredUrl(chosenTab.url, DEFAULT_PLATFORM_URL)
+    : saved.platformUrl || DEFAULT_PLATFORM_URL;
+  const backendUrl = saved.backendUrl || DEFAULT_BACKEND_URL;
 
   await chrome.storage.local.set({
     [PLATFORM_URL_STORAGE_KEY]: platformUrl,
@@ -320,16 +427,27 @@ async function initializePopup() {
     PLATFORM_PROFILE_TEXT_STORAGE_KEY,
     PLATFORM_USER_ID_STORAGE_KEY,
     PLATFORM_ACCESS_TOKEN_STORAGE_KEY,
-    PLATFORM_DOCUMENT_NAMES_STORAGE_KEY
+    PLATFORM_USER_EMAIL_STORAGE_KEY,
+    PLATFORM_DOCUMENT_NAMES_STORAGE_KEY,
+    STRUCTURED_PROFILE_STORAGE_KEY
   ]);
   renderProfileSummary(saved[PLATFORM_DOCUMENT_NAMES_STORAGE_KEY] || []);
   const hasConnectedProfile = Boolean(
     saved[PLATFORM_PROFILE_TEXT_STORAGE_KEY] ||
+    saved[STRUCTURED_PROFILE_STORAGE_KEY] ||
     saved[PLATFORM_USER_ID_STORAGE_KEY] ||
     saved[PLATFORM_ACCESS_TOKEN_STORAGE_KEY]
   );
+  const isAuthenticated = Boolean(
+    saved[PLATFORM_USER_ID_STORAGE_KEY] &&
+    saved[PLATFORM_ACCESS_TOKEN_STORAGE_KEY]
+  );
+  renderAuthState({
+    isAuthenticated,
+    email: saved[PLATFORM_USER_EMAIL_STORAGE_KEY] || ""
+  });
   setStatusState(hasConnectedProfile ? "success" : "idle");
-  updateFlowState({ hasConnectedProfile });
+  updateFlowState({ hasConnectedProfile, isAuthenticated });
 }
 
 async function getPlatformTab(platformUrl) {
@@ -598,6 +716,52 @@ async function syncStructuredProfile(backendUrl, profileText, userId) {
   };
 }
 
+async function syncFromStoredSession() {
+  const { backendUrl } = await resolvePlatformAndBackendUrls();
+  const saved = await chrome.storage.local.get([
+    PLATFORM_USER_ID_STORAGE_KEY,
+    PLATFORM_ACCESS_TOKEN_STORAGE_KEY,
+    PLATFORM_USER_EMAIL_STORAGE_KEY,
+    PLATFORM_DOCUMENT_NAMES_STORAGE_KEY,
+    STRUCTURED_PROFILE_STORAGE_KEY
+  ]);
+
+  const userId = saved[PLATFORM_USER_ID_STORAGE_KEY] || "";
+  const accessToken = saved[PLATFORM_ACCESS_TOKEN_STORAGE_KEY] || "";
+  const email = saved[PLATFORM_USER_EMAIL_STORAGE_KEY] || "";
+
+  if (!userId || !accessToken) {
+    setStatusState("error");
+    setStatus("Log in to the extension first, or open GrantFlow and sync from the site.");
+    updateFlowState({ hasConnectedProfile: false, isAuthenticated: false });
+    return;
+  }
+
+  let structuredProfile = saved[STRUCTURED_PROFILE_STORAGE_KEY] || null;
+  try {
+    const syncResult = await syncStructuredProfile(backendUrl, "", userId, accessToken);
+    structuredProfile = syncResult.structuredProfile || structuredProfile;
+  } catch (error) {
+    console.warn("Session-only profile sync failed", error);
+  }
+
+  await chrome.storage.local.set({
+    [STRUCTURED_PROFILE_STORAGE_KEY]: structuredProfile,
+    [PLATFORM_USER_ID_STORAGE_KEY]: userId,
+    [PLATFORM_ACCESS_TOKEN_STORAGE_KEY]: accessToken,
+    [PLATFORM_USER_EMAIL_STORAGE_KEY]: email
+  });
+
+  renderAuthState({ isAuthenticated: true, email });
+  renderProfileSummary(saved[PLATFORM_DOCUMENT_NAMES_STORAGE_KEY] || []);
+  updateFlowState({ hasConnectedProfile: Boolean(structuredProfile || userId), isAuthenticated: true });
+  setStatusState(structuredProfile ? "success" : "idle");
+  setStatus(structuredProfile
+    ? "Signed in and synced account context from GrantFlow."
+    : "Signed in successfully. Open GrantFlow and sync after uploading documents."
+  );
+}
+
 async function connectToPlatform() {
   const { platformUrl, backendUrl } = await resolvePlatformAndBackendUrls();
   const existing = await chrome.storage.local.get([
@@ -609,9 +773,7 @@ async function connectToPlatform() {
 
   const tab = await getPlatformTab(platformUrl);
   if (!tab?.id) {
-    setStatusState("error");
-    setStatus("Platform tab not found. Open the platform first, then connect.");
-    updateFlowState({ hasConnectedProfile: false });
+    await syncFromStoredSession();
     return;
   }
 
@@ -644,23 +806,26 @@ async function connectToPlatform() {
         }
         const authKey = Object.keys(window.localStorage).find((key) => key.includes("-auth-token"));
         let userId = explicitUserId;
+        let email = "";
         let accessToken = "";
         if (authKey) {
           try {
             const rawSession = window.localStorage.getItem(authKey);
             const parsedSession = rawSession ? JSON.parse(rawSession) : null;
             userId = explicitUserId || parsedSession?.user?.id || parsedSession?.currentSession?.user?.id || "";
+            email = parsedSession?.user?.email || parsedSession?.currentSession?.user?.email || "";
             accessToken = parsedSession?.access_token || parsedSession?.currentSession?.access_token || parsedSession?.session?.access_token || "";
           } catch {
             userId = explicitUserId;
           }
         }
-        return { profile, summary, userId, accessToken, documentNames };
+        return { profile, summary, userId, email, accessToken, documentNames };
       } catch (error) {
         return {
           profile: "",
           summary: null,
           userId: "",
+          email: "",
           accessToken: "",
           documentNames: [],
           error: error instanceof Error ? error.message : "Could not read platform state."
@@ -691,6 +856,8 @@ async function connectToPlatform() {
     : (existing[PLATFORM_DOCUMENT_NAMES_STORAGE_KEY] || []);
 
   const profileText = result.profile || existing[PLATFORM_PROFILE_TEXT_STORAGE_KEY] || "";
+  const storedAuth = await chrome.storage.local.get([PLATFORM_USER_EMAIL_STORAGE_KEY]);
+  const resolvedEmail = result.email || storedAuth[PLATFORM_USER_EMAIL_STORAGE_KEY] || "";
 
   let structuredProfile = null;
 
@@ -712,12 +879,17 @@ async function connectToPlatform() {
     [PLATFORM_PROFILE_TEXT_STORAGE_KEY]: profileText,
     [PLATFORM_USER_ID_STORAGE_KEY]: result.userId || "",
     [PLATFORM_ACCESS_TOKEN_STORAGE_KEY]: result.accessToken || "",
+    [PLATFORM_USER_EMAIL_STORAGE_KEY]: resolvedEmail,
     [PLATFORM_DOCUMENT_NAMES_STORAGE_KEY]: documentNames,
     [STRUCTURED_PROFILE_STORAGE_KEY]: structuredProfile
   });
 
   renderProfileSummary(documentNames);
-  updateFlowState({ hasConnectedProfile: true });
+  renderAuthState({
+    isAuthenticated: Boolean(result.userId || result.accessToken || resolvedEmail),
+    email: resolvedEmail
+  });
+  updateFlowState({ hasConnectedProfile: true, isAuthenticated: Boolean(result.userId || result.accessToken || resolvedEmail) });
   setStatusState(structuredProfile ? "success" : "idle");
   setStatus(structuredProfile
     ? "Connected and synced organization data successfully."
@@ -1412,6 +1584,28 @@ function resolveFieldKeyForFill(field) {
   return inferFieldKeyFromText(field.descriptor, field.fieldKey);
 }
 
+function isNarrativeFieldKey(fieldKey) {
+  return SYNTHETIC_AI_FIELD_KEYS.has(fieldKey);
+}
+
+function isNarrativeField(field) {
+  const resolvedFieldKey = resolveFieldKeyForFill(field);
+  const tagName = String(field.tagName || "").toLowerCase();
+  return tagName === "textarea" || isNarrativeFieldKey(resolvedFieldKey);
+}
+
+function shouldAcceptGeneratedAnswer(field, resolvedFieldKey, normalizedAnswer, confidence) {
+  if (!normalizedAnswer || !isSafeValueForFieldKey(resolvedFieldKey, normalizedAnswer)) {
+    return false;
+  }
+
+  if (confidence !== "low") {
+    return true;
+  }
+
+  return isNarrativeField(field);
+}
+
 function shouldUseAiFallback(field) {
   const resolvedFieldKey = resolveFieldKeyForFill(field);
   const group = getFieldGroup(resolvedFieldKey);
@@ -1637,14 +1831,21 @@ async function autofillCurrentPage() {
         accessToken
       });
 
+      const aiTargetByIndex = new Map(aiTargets.map((field) => [field.index, field]));
       answers.forEach((answer) => {
+        const sourceField = aiTargetByIndex.get(answer.index);
+        if (!sourceField) {
+          return;
+        }
         const resolvedFieldKey = answer.fieldKey || "unknown";
         const normalizedAnswer = normalizeValueForFieldKey(resolvedFieldKey, answer.answer);
-        if (normalizedAnswer && answer.confidence !== "low" && isSafeValueForFieldKey(resolvedFieldKey, normalizedAnswer)) {
+        if (shouldAcceptGeneratedAnswer(sourceField, resolvedFieldKey, normalizedAnswer, answer.confidence)) {
           fillMap.set(answer.index, {
             index: answer.index,
             value: normalizedAnswer,
-            confidence: answer.confidence || "medium",
+            confidence: answer.confidence === "low" && isNarrativeField(sourceField)
+              ? "medium"
+              : (answer.confidence || "medium"),
             fieldKey: resolvedFieldKey
           });
         }
@@ -1680,6 +1881,64 @@ async function autofillCurrentPage() {
   setStatusState(applied > 0 ? "success" : "error");
   setStatus(`Autofilled ${applied} field${applied === 1 ? "" : "s"} from uploaded-document context. ${skipped ? `${skipped} still need review.` : "Review highlights for any remaining fields."}`);
 }
+
+loginForm.addEventListener("submit", (event) => {
+  event.preventDefault();
+  const email = String(loginEmailInput.value || "").trim();
+  const password = String(loginPasswordInput.value || "");
+
+  if (!email || !password) {
+    setStatusState("error");
+    setStatus("Enter the same GrantFlow email and password you use on the website.");
+    return;
+  }
+
+  loginButton.disabled = true;
+  setStatusState("working");
+  setStatus("Signing in to GrantFlow...");
+
+  signInWithGrantFlow(email, password)
+    .then(async ({ userId, accessToken, email: signedInEmail }) => {
+      await chrome.storage.local.set({
+        [PLATFORM_USER_ID_STORAGE_KEY]: userId,
+        [PLATFORM_ACCESS_TOKEN_STORAGE_KEY]: accessToken,
+        [PLATFORM_USER_EMAIL_STORAGE_KEY]: signedInEmail
+      });
+      loginPasswordInput.value = "";
+      renderAuthState({ isAuthenticated: true, email: signedInEmail });
+      await syncFromStoredSession();
+    })
+    .catch((error) => {
+      console.error(error);
+      setStatusState("error");
+      setStatus(error instanceof Error ? error.message : "Could not sign in to GrantFlow.");
+      renderAuthState({ isAuthenticated: false, email: "" });
+    })
+    .finally(() => {
+      loginButton.disabled = false;
+    });
+});
+
+logoutButton.addEventListener("click", async () => {
+  logoutButton.disabled = true;
+  setStatusState("working");
+  setStatus("Signing out...");
+  try {
+    const saved = await chrome.storage.local.get([PLATFORM_ACCESS_TOKEN_STORAGE_KEY]);
+    await signOutOfGrantFlow(saved[PLATFORM_ACCESS_TOKEN_STORAGE_KEY] || "");
+    await clearExtensionSession();
+    renderAuthState({ isAuthenticated: false, email: "" });
+    updateFlowState({ hasConnectedProfile: false, isAuthenticated: false });
+    setStatusState("idle");
+    setStatus("Signed out of the extension.");
+  } catch (error) {
+    console.error(error);
+    setStatusState("error");
+    setStatus("Could not sign out cleanly.");
+  } finally {
+    logoutButton.disabled = false;
+  }
+});
 
 autofillButton.addEventListener("click", () => {
   autofillCurrentPage().catch((error) => {
