@@ -27,8 +27,8 @@ const PROFILE_STORAGE_KEY = "grantflow.organizationProfile";
 const PROFILE_SUMMARY_STORAGE_KEY = "grantflow.profileSummary";
 const USER_ID_STORAGE_KEY = "grantflow.userId";
 const SAVED_DOCUMENTS_STORAGE_KEY = "grantflow.savedDocuments";
-const DEFAULT_PLATFORM_URL = "https://grantflowab2gene.vercel.app";
-const DEFAULT_BACKEND_URL = "https://grantflowab2gene.vercel.app";
+const DEFAULT_PLATFORM_URL = "http://localhost:5173";
+const DEFAULT_BACKEND_URL = "http://localhost:3001";
 const SUPABASE_URL = "https://rybedqeusxktutikqwoz.supabase.co";
 const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InJ5YmVkcWV1c3hrdHV0aWtxd296Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzE1NDkxMzMsImV4cCI6MjA4NzEyNTEzM30.ViRFZMfPzyNfGyPMsYB1LWuJENuJeXkt8zsU5x5jN2M";
 
@@ -79,6 +79,31 @@ async function clearExtensionSession() {
     STRUCTURED_PROFILE_STORAGE_KEY
   ]);
   renderProfileSummary([]);
+}
+
+async function fetchDocumentsForSession(userId, accessToken) {
+  if (!userId || !accessToken) {
+    return [];
+  }
+
+  const response = await fetch(
+    `${SUPABASE_URL}/rest/v1/documents?select=id,filename,created_at&user_id=eq.${encodeURIComponent(userId)}&order=created_at.desc`,
+    {
+      headers: {
+        apikey: SUPABASE_ANON_KEY,
+        Authorization: `Bearer ${accessToken}`
+      }
+    }
+  );
+
+  const data = await response.json().catch(() => []);
+  if (!response.ok || !Array.isArray(data)) {
+    throw new Error(`Could not load saved documents: ${response.status}`);
+  }
+
+  return data
+    .map((item) => String(item?.filename || "").trim())
+    .filter(Boolean);
 }
 
 async function signInWithGrantFlow(email, password) {
@@ -138,18 +163,29 @@ function normalizeConfiguredUrl(url, fallbackUrl) {
   return origin;
 }
 
+function isLegacyHostedGrantFlowUrl(url) {
+  const origin = toOrigin(url);
+  return origin.includes("vercel.app") || origin.includes("grantflowab2gene.vercel.app");
+}
+
 async function getSavedUrls() {
   const saved = await chrome.storage.local.get([
     PLATFORM_URL_STORAGE_KEY,
     BACKEND_URL_STORAGE_KEY
   ]);
 
-  const platformUrl = normalizeConfiguredUrl(saved[PLATFORM_URL_STORAGE_KEY], DEFAULT_PLATFORM_URL);
-  const backendUrl = normalizeConfiguredUrl(saved[BACKEND_URL_STORAGE_KEY], DEFAULT_BACKEND_URL);
+  const rawPlatformUrl = saved[PLATFORM_URL_STORAGE_KEY];
+  const rawBackendUrl = saved[BACKEND_URL_STORAGE_KEY];
+  const platformUrl = isLegacyHostedGrantFlowUrl(rawPlatformUrl)
+    ? DEFAULT_PLATFORM_URL
+    : normalizeConfiguredUrl(rawPlatformUrl, DEFAULT_PLATFORM_URL);
+  const backendUrl = isLegacyHostedGrantFlowUrl(rawBackendUrl)
+    ? DEFAULT_BACKEND_URL
+    : normalizeConfiguredUrl(rawBackendUrl, DEFAULT_BACKEND_URL);
 
   if (
-    platformUrl !== saved[PLATFORM_URL_STORAGE_KEY] ||
-    backendUrl !== saved[BACKEND_URL_STORAGE_KEY]
+    platformUrl !== rawPlatformUrl ||
+    backendUrl !== rawBackendUrl
   ) {
     await chrome.storage.local.set({
       [PLATFORM_URL_STORAGE_KEY]: platformUrl,
@@ -182,19 +218,18 @@ function isLikelyGrantFlowTab(tab) {
 async function resolvePlatformAndBackendUrls() {
   const saved = await getSavedUrls();
   const tabs = await chrome.tabs.query({});
+  const localTab = tabs.find((tab) => {
+    const origin = toOrigin(tab.url || "");
+    return origin === DEFAULT_PLATFORM_URL;
+  });
   const exactMatchTab = tabs.find((tab) => {
     const origin = toOrigin(tab.url || "");
     return origin && origin === saved.platformUrl;
   });
 
-  const deployedTab = tabs.find((tab) => {
-    const origin = toOrigin(tab.url || "");
-    return origin === DEFAULT_PLATFORM_URL;
-  });
-
   const fallbackGrantFlowTab = tabs.find((tab) => isLikelyGrantFlowTab(tab));
 
-  const chosenTab = exactMatchTab || deployedTab || fallbackGrantFlowTab || null;
+  const chosenTab = localTab || exactMatchTab || fallbackGrantFlowTab || null;
   const platformUrl = chosenTab?.url
     ? normalizeConfiguredUrl(chosenTab.url, DEFAULT_PLATFORM_URL)
     : saved.platformUrl || DEFAULT_PLATFORM_URL;
@@ -448,6 +483,12 @@ async function initializePopup() {
   });
   setStatusState(hasConnectedProfile ? "success" : "idle");
   updateFlowState({ hasConnectedProfile, isAuthenticated });
+
+  if (isAuthenticated) {
+    syncFromStoredSession({ quiet: true }).catch((error) => {
+      console.warn("Automatic extension sync failed", error);
+    });
+  }
 }
 
 async function getPlatformTab(platformUrl) {
@@ -716,12 +757,15 @@ async function syncStructuredProfile(backendUrl, profileText, userId) {
   };
 }
 
-async function syncFromStoredSession() {
+async function syncFromStoredSession(options = {}) {
+  const quiet = Boolean(options.quiet);
   const { backendUrl } = await resolvePlatformAndBackendUrls();
   const saved = await chrome.storage.local.get([
     PLATFORM_USER_ID_STORAGE_KEY,
     PLATFORM_ACCESS_TOKEN_STORAGE_KEY,
     PLATFORM_USER_EMAIL_STORAGE_KEY,
+    PLATFORM_PROFILE_TEXT_STORAGE_KEY,
+    PLATFORM_PROFILE_STORAGE_KEY,
     PLATFORM_DOCUMENT_NAMES_STORAGE_KEY,
     STRUCTURED_PROFILE_STORAGE_KEY
   ]);
@@ -731,13 +775,16 @@ async function syncFromStoredSession() {
   const email = saved[PLATFORM_USER_EMAIL_STORAGE_KEY] || "";
 
   if (!userId || !accessToken) {
-    setStatusState("error");
-    setStatus("Log in to the extension first, or open GrantFlow and sync from the site.");
-    updateFlowState({ hasConnectedProfile: false, isAuthenticated: false });
+    if (!quiet) {
+      setStatusState("error");
+      setStatus("Log in to the extension first, or open GrantFlow and sync from the site.");
+      updateFlowState({ hasConnectedProfile: false, isAuthenticated: false });
+    }
     return;
   }
 
   let structuredProfile = saved[STRUCTURED_PROFILE_STORAGE_KEY] || null;
+  let documentNames = saved[PLATFORM_DOCUMENT_NAMES_STORAGE_KEY] || [];
   try {
     const syncResult = await syncStructuredProfile(backendUrl, "", userId, accessToken);
     structuredProfile = syncResult.structuredProfile || structuredProfile;
@@ -745,26 +792,41 @@ async function syncFromStoredSession() {
     console.warn("Session-only profile sync failed", error);
   }
 
+  try {
+    const freshDocumentNames = await fetchDocumentsForSession(userId, accessToken);
+    if (freshDocumentNames.length) {
+      documentNames = freshDocumentNames;
+    }
+  } catch (error) {
+    console.warn("Session-only document sync failed", error);
+  }
+
   await chrome.storage.local.set({
     [STRUCTURED_PROFILE_STORAGE_KEY]: structuredProfile,
     [PLATFORM_USER_ID_STORAGE_KEY]: userId,
     [PLATFORM_ACCESS_TOKEN_STORAGE_KEY]: accessToken,
-    [PLATFORM_USER_EMAIL_STORAGE_KEY]: email
+    [PLATFORM_USER_EMAIL_STORAGE_KEY]: email,
+    [PLATFORM_DOCUMENT_NAMES_STORAGE_KEY]: documentNames
   });
 
   renderAuthState({ isAuthenticated: true, email });
-  renderProfileSummary(saved[PLATFORM_DOCUMENT_NAMES_STORAGE_KEY] || []);
+  renderProfileSummary(documentNames);
   updateFlowState({ hasConnectedProfile: Boolean(structuredProfile || userId), isAuthenticated: true });
-  setStatusState(structuredProfile ? "success" : "idle");
-  setStatus(structuredProfile
-    ? "Signed in and synced account context from GrantFlow."
-    : "Signed in successfully. Open GrantFlow and sync after uploading documents."
-  );
+  if (!quiet) {
+    setStatusState(structuredProfile ? "success" : "idle");
+    setStatus(structuredProfile
+      ? "Signed in and synced account context from GrantFlow."
+      : "Signed in successfully. Upload documents in GrantFlow and they will appear here automatically."
+    );
+  }
 }
 
 async function connectToPlatform() {
   const { platformUrl, backendUrl } = await resolvePlatformAndBackendUrls();
   const existing = await chrome.storage.local.get([
+    PLATFORM_USER_ID_STORAGE_KEY,
+    PLATFORM_ACCESS_TOKEN_STORAGE_KEY,
+    PLATFORM_USER_EMAIL_STORAGE_KEY,
     PLATFORM_DOCUMENT_NAMES_STORAGE_KEY,
     PLATFORM_PROFILE_TEXT_STORAGE_KEY,
     PLATFORM_PROFILE_STORAGE_KEY,
@@ -842,12 +904,18 @@ async function connectToPlatform() {
     return;
   }
 
-  const hasSignedInContext = Boolean(result.userId || result.accessToken);
+  const storedUserId = existing[PLATFORM_USER_ID_STORAGE_KEY] || "";
+  const storedAccessToken = existing[PLATFORM_ACCESS_TOKEN_STORAGE_KEY] || "";
+  const storedEmail = existing[PLATFORM_USER_EMAIL_STORAGE_KEY] || "";
+  const resolvedUserId = result.userId || storedUserId;
+  const resolvedAccessToken = result.accessToken || storedAccessToken;
+  const resolvedEmail = result.email || storedEmail;
+  const hasSignedInContext = Boolean(resolvedUserId || resolvedAccessToken);
   if (!result.profile && !hasSignedInContext) {
     setStatusState("error");
     setStatus("No uploaded-document profile or signed-in document context was found yet. Upload documents in the platform first.");
     renderProfileSummary([]);
-    updateFlowState({ hasConnectedProfile: false });
+    updateFlowState({ hasConnectedProfile: false, isAuthenticated: false });
     return;
   }
 
@@ -856,14 +924,12 @@ async function connectToPlatform() {
     : (existing[PLATFORM_DOCUMENT_NAMES_STORAGE_KEY] || []);
 
   const profileText = result.profile || existing[PLATFORM_PROFILE_TEXT_STORAGE_KEY] || "";
-  const storedAuth = await chrome.storage.local.get([PLATFORM_USER_EMAIL_STORAGE_KEY]);
-  const resolvedEmail = result.email || storedAuth[PLATFORM_USER_EMAIL_STORAGE_KEY] || "";
 
   let structuredProfile = null;
 
   if (backendUrl) {
     try {
-      const syncResult = await syncStructuredProfile(backendUrl, profileText, result.userId || "", result.accessToken || "");
+      const syncResult = await syncStructuredProfile(backendUrl, profileText, resolvedUserId, resolvedAccessToken);
       structuredProfile = syncResult.structuredProfile;
     } catch (error) {
       console.warn("Structured profile sync failed", error);
@@ -877,8 +943,8 @@ async function connectToPlatform() {
   await chrome.storage.local.set({
     [PLATFORM_PROFILE_STORAGE_KEY]: result.summary || existing[PLATFORM_PROFILE_STORAGE_KEY] || null,
     [PLATFORM_PROFILE_TEXT_STORAGE_KEY]: profileText,
-    [PLATFORM_USER_ID_STORAGE_KEY]: result.userId || "",
-    [PLATFORM_ACCESS_TOKEN_STORAGE_KEY]: result.accessToken || "",
+    [PLATFORM_USER_ID_STORAGE_KEY]: resolvedUserId,
+    [PLATFORM_ACCESS_TOKEN_STORAGE_KEY]: resolvedAccessToken,
     [PLATFORM_USER_EMAIL_STORAGE_KEY]: resolvedEmail,
     [PLATFORM_DOCUMENT_NAMES_STORAGE_KEY]: documentNames,
     [STRUCTURED_PROFILE_STORAGE_KEY]: structuredProfile
@@ -886,10 +952,10 @@ async function connectToPlatform() {
 
   renderProfileSummary(documentNames);
   renderAuthState({
-    isAuthenticated: Boolean(result.userId || result.accessToken || resolvedEmail),
+    isAuthenticated: Boolean(resolvedUserId || resolvedAccessToken || resolvedEmail),
     email: resolvedEmail
   });
-  updateFlowState({ hasConnectedProfile: true, isAuthenticated: Boolean(result.userId || result.accessToken || resolvedEmail) });
+  updateFlowState({ hasConnectedProfile: true, isAuthenticated: Boolean(resolvedUserId || resolvedAccessToken || resolvedEmail) });
   setStatusState(structuredProfile ? "success" : "idle");
   setStatus(structuredProfile
     ? "Connected and synced organization data successfully."
@@ -966,6 +1032,8 @@ const SYNTHETIC_AI_FIELD_KEYS = new Set([
   "board_governance",
   "success_metrics"
 ]);
+
+const MAX_AI_FIELDS_PER_PAGE = 3;
 
 function buildFieldTextBlob(field) {
   return normalizeFillText([
@@ -1638,13 +1706,8 @@ function shouldUseAiFallback(field) {
 }
 
 function shouldPrioritizeAiForField(field) {
-  const tagName = String(field.tagName || "").toLowerCase();
   const resolvedFieldKey = resolveFieldKeyForFill(field);
   const group = getFieldGroup(resolvedFieldKey);
-
-  if (tagName === "textarea") {
-    return true;
-  }
 
   if (SYNTHETIC_AI_FIELD_KEYS.has(resolvedFieldKey)) {
     return true;
@@ -1801,14 +1864,16 @@ async function autofillCurrentPage() {
   const fills = buildStructuredFills(targets, structuredProfile);
   const fillMap = new Map(fills.map((fill) => [fill.index, fill]));
   const aiTargets = targets.filter((field) => {
-    if (String(field.tagName || "").toLowerCase() === "textarea") {
-      return true;
-    }
     if (shouldPrioritizeAiForField(field)) {
       return true;
     }
     return !fillMap.has(field.index) && shouldUseAiFallback(field);
-  });
+  }).sort((a, b) => {
+    if (a.required !== b.required) {
+      return a.required ? -1 : 1;
+    }
+    return b.confidence - a.confidence;
+  }).slice(0, MAX_AI_FIELDS_PER_PAGE);
 
   if (aiTargets.length) {
     setStatusState("working");

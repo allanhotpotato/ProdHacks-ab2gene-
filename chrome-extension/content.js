@@ -1053,7 +1053,7 @@
       }
 
       [data-grant-helper-match="review"] {
-        outline: 3px solid rgba(250, 204, 21, 0.95) !important;
+        outline: 3px solid rgba(34, 197, 94, 0.9) !important;
         outline-offset: 2px !important;
       }
 
@@ -1083,11 +1083,7 @@
         return;
       }
 
-      const matchType = field.confidenceBucket === "high"
-        ? "high"
-        : field.confidenceBucket === "review"
-          ? "review"
-          : "low";
+      const matchType = field.confidenceBucket === "low" ? "low" : "high";
 
       element.setAttribute("data-grant-helper-match", matchType);
       element.setAttribute("data-grant-helper-key", field.fieldKey);
@@ -1186,11 +1182,7 @@
 
       const ok = fillElementValue(element, fill.value);
       if (ok) {
-        const matchType = fill.confidence === "high"
-          ? "high"
-          : fill.confidence === "medium"
-            ? "review"
-            : "low";
+        const matchType = fill.confidence === "low" ? "low" : "high";
         element.setAttribute("data-grant-helper-match", matchType);
         applied.push(fill);
       } else {
