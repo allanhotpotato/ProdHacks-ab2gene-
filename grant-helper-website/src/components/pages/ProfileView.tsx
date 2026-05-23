@@ -823,7 +823,7 @@ export default function ProfileView({
                     }
                   }
 
-                  // Upload each file to Supabase Storage + documents table when user is available
+                  // Upload, chunk, embed (Python service), and persist document_chunks
                   if (userId) {
                     for (const { file } of files) {
                       try {
@@ -832,18 +832,14 @@ export default function ProfileView({
                         console.warn('Supabase upload failed for', file.name, uploadErr);
                         warnings.push(
                           uploadErr instanceof Error
-                            ? `${file.name} could not be saved to cloud storage, but the document was still analyzed.`
-                            : 'One or more files could not be saved to your account, but extraction will continue.'
+                            ? `${file.name} could not be saved to cloud storage.`
+                            : 'One or more files could not be saved to your account.'
                         );
                       }
                     }
+                  } else {
+                    await extractDocuments(files.map((f) => f.file));
                   }
-
-                  const accessToken = session?.access_token;
-                  await extractDocuments(
-                    files.map((f) => f.file),
-                    accessToken ? { accessToken } : undefined
-                  );
 
                   await loadSavedDocuments();
                   setSaveSuccess(`Saved your files and updated your organization profile from ${files.length} document${files.length === 1 ? '' : 's'}.`);
@@ -860,7 +856,7 @@ export default function ProfileView({
                 }
               }}
             >
-              {extracting ? 'Analyzing with AI…' : '✨ Analyze with AI'}
+              {extracting ? 'Uploading files…' : 'Upload files'}
             </button>
             {extractError && (
               <p className="upload-error" role="alert">

@@ -10,10 +10,15 @@ export type ExtractDocumentsOptions = {
   documentIds?: string[];
 };
 
+export type ExtractDocumentsResult = {
+  text: string;
+  chunksInserted?: number;
+};
+
 export async function extractDocuments(
   files: File[],
   options?: ExtractDocumentsOptions
-): Promise<void> {
+): Promise<ExtractDocumentsResult> {
   const form = new FormData();
   for (const file of files) {
     form.append('files', file);
@@ -43,4 +48,5 @@ export async function extractDocuments(
     throw new Error((err as { error?: string }).error || `Extract failed: ${res.status}`);
   }
 
+  return (await res.json()) as ExtractDocumentsResult;
 }

@@ -13,6 +13,7 @@
  */
 
 import { createClient } from '@supabase/supabase-js';
+import { extractDocuments } from '../api/extractDocuments';
 
 // These would be set in production .env:
 // VITE_SUPABASE_URL=https://your-project.supabase.co
@@ -33,36 +34,60 @@ function requireSupabase() {
 }
 
 /**
- * Upload a file to Supabase Storage
- * @param file - File object to upload
- * @param userId - User ID (from auth.user())
- * @returns Storage path if successful
+ * Upload a file to Supabase Storage, then chunk + embed via the API server (Python)
+ * and insert rows into `document_chunks`.
  */
-export async function uploadToSupabase(file: File, userId: string): Promise<string> {
+export async function uploadToSupabase(file: File, userId: string): Promise<void> {
   const client = requireSupabase();
   const documentId = crypto.randomUUID();
   const storagePath = `${userId}/${documentId}/${file.name}`;
 
-  // Upload to Storage
   const { error: uploadError } = await client.storage
     .from('user-docs')
     .upload(storagePath, file);
 
   if (uploadError) throw uploadError;
 
-  // Insert metadata into documents table
   const { error: dbError } = await client.from('documents').insert({
+    id: documentId,
     user_id: userId,
     filename: file.name,
-    mime_type: file.type,
+    mime_type: file.type || 'application/octet-stream',
     storage_path: storagePath,
     file_size_bytes: file.size,
-    status: 'uploaded',
+    status: 'processing',
   });
 
   if (dbError) throw dbError;
 
-  return storagePath;
+  const { data: sessionData } = await client.auth.getSession();
+  const accessToken = sessionData.session?.access_token;
+
+  if (accessToken) {
+    try {
+      await extractDocuments([file], {
+        accessToken,
+        documentIds: [documentId],
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Chunking or embedding failed';
+      await client
+        .from('documents')
+        .update({ status: 'failed', error: message })
+        .eq('id', documentId)
+        .eq('user_id', userId);
+      throw err;
+    }
+  } else {
+    console.warn(
+      'uploadToSupabase: no auth session; file stored but document_chunks were not created'
+    );
+    await client
+      .from('documents')
+      .update({ status: 'uploaded' })
+      .eq('id', documentId)
+      .eq('user_id', userId);
+  }
 }
 
 /**
