@@ -162,8 +162,8 @@ export async function deleteDocument(documentId: string) {
 }
 
 export type OrganizationProfileRow = {
+  full_name: string;
   organization_name: string;
-  organization_profile: string;
 };
 
 export async function fetchOrganizationProfile(
@@ -172,10 +172,10 @@ export async function fetchOrganizationProfile(
   const client = requireSupabase();
   const { data, error } = await client
     .from('profiles')
-    .select('organization_name, organization_profile')
+    .select('full_name, organization_name')
     .eq('id', userId)
     .maybeSingle();
-
+  
   if (error) throw error;
   return data;
 }
