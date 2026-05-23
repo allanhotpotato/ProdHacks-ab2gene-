@@ -5,6 +5,9 @@ const autofillButton = document.getElementById("autofill-button");
 const openPlatformButton = document.getElementById("open-platform-button");
 const connectPlatformButton = document.getElementById("connect-platform-button");
 const profileSummaryNode = document.getElementById("profile-summary");
+const stepOpenNode = document.getElementById("step-open");
+const stepConnectNode = document.getElementById("step-connect");
+const stepAutofillNode = document.getElementById("step-autofill");
 
 const PLATFORM_URL_STORAGE_KEY = "grantflow.extension.platformUrl";
 const BACKEND_URL_STORAGE_KEY = "grantflow.extension.backendUrl";

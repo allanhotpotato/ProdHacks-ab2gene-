@@ -98,7 +98,7 @@ h1 {
   margin: 0 0 10px;
   color: #cbd5e1;
   font-size: 12px;
-  line-height: 1.5;
+  line-height: 1.45;
 }
 
 button {
@@ -133,6 +133,11 @@ button:disabled {
 
 .secondary-button:hover {
   background: rgba(34, 207, 169, 0.1);
+}
+
+.config-input:focus {
+  outline: 2px solid rgba(249, 115, 22, 0.35);
+  border-color: rgba(249, 115, 22, 0.4);
 }
 
 .profile-summary-card {
