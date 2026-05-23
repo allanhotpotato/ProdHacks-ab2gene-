@@ -1,7 +1,17 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
 import { extractDocuments } from '../../api/extractDocuments';
 import { lookupEIN } from '../../api/einLookup';
-import { deleteDocument, supabase, uploadToSupabase, saveOrganizationProfileText, fetchOrganizationProfile, getUserDocuments, isSupabaseConfigured } from '../../config/supabase';
+import {
+  deleteDocument,
+  supabase,
+  uploadToSupabase,
+  saveOrganizationProfileText,
+  fetchOrganizationProfile,
+  getUserDocuments,
+  isSupabaseConfigured,
+  type OrganizationProfileRow,
+} from '../../config/supabase';
+import { useSupabaseAuth } from '../../hooks/useSupabaseAuth';
 import './EmptyState.css';
 import './ProfileView.css';
 
@@ -12,7 +22,7 @@ function extractOrganizationName(profile: string) {
   const trimmed = profile.trim();
   if (!trimmed) return '';
 
-  const labeledMatch = trimmed.match(/(?:organization name|nonprofit name|org name)\s*[:\-]\s*([^\n.]+)/i);
+  const labeledMatch = trimmed.match(/(?:organization name|nonprofit name|org name)\s*[:-]\s*([^\n.]+)/i);
   if (labeledMatch?.[1]) {
     return labeledMatch[1].trim();
   }
@@ -23,6 +33,15 @@ function extractOrganizationName(profile: string) {
   }
 
   return '';
+}
+
+function resolveOrganizationName(
+  row: OrganizationProfileRow | null | undefined,
+  profileTextFallback = ''
+): string {
+  const fromColumn = row?.organization_name?.trim();
+  if (fromColumn) return fromColumn;
+  return extractOrganizationName(row?.organization_name || profileTextFallback);
 }
 
 /** Write profile text + document names to localStorage so the Chrome extension and other views can read them. */
@@ -139,7 +158,6 @@ const SUCCESS_STORIES = [
 
 interface ProfileViewProps {
   organizationProfile?: string;
-  onOrganizationProfileChange?: (value: string) => void;
 }
 
 type SavedDocument = {
@@ -153,12 +171,9 @@ type SavedDocument = {
 
 export default function ProfileView({
   organizationProfile: profileProp,
-  onOrganizationProfileChange,
 }: ProfileViewProps) {
-  const organizationProfile =
-    profileProp ??
-    (typeof window !== 'undefined' ? window.localStorage.getItem(PROFILE_STORAGE_KEY) : '') ??
-    '';
+  const { session } = useSupabaseAuth();
+  const isLoggedIn = Boolean(session?.user);
   const [showUpload, setShowUpload] = useState(false);
   const [files, setFiles] = useState<UploadedFile[]>([]);
   const [dragging, setDragging] = useState(false);
@@ -172,11 +187,23 @@ export default function ProfileView({
   const [deletingDocumentId, setDeletingDocumentId] = useState<string | null>(null);
   const [activeModule, setActiveModule] = useState(PROFILE_MODULES[0].id);
   const [openFaq, setOpenFaq] = useState<string | null>(PROFILE_FAQS[0].id);
-  const [connectedUserId, setConnectedUserId] = useState(() => {
-    if (typeof window === 'undefined') return '';
-    return window.localStorage.getItem('grantflow.userId') || '';
+  const [organizationName, setOrganizationName] = useState(() => {
+    const localProfile =
+      profileProp ??
+      (typeof window !== 'undefined' ? window.localStorage.getItem(PROFILE_STORAGE_KEY) : '') ??
+      '';
+    return resolveOrganizationName(null, localProfile);
   });
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // Keep grantflow.userId in sync for the Chrome extension (not used for UI auth state).
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const userId = session?.user?.id;
+    if (userId) {
+      window.localStorage.setItem('grantflow.userId', userId);
+    }
+  }, [session?.user?.id]);
 
   // Sync saved document names to localStorage whenever they change
   useEffect(() => {
@@ -186,28 +213,29 @@ export default function ProfileView({
     }
   }, [savedDocuments]);
 
-  // Hydrate localStorage from Supabase on mount (for returning users)
+  // Load organization name + profile text from Supabase for returning users
   useEffect(() => {
-    if (typeof window === 'undefined' || !supabase) return;
+    const userId = session?.user?.id;
+    if (!userId || !isSupabaseConfigured) return;
+
     (async () => {
       try {
-        const { data: { session } } = await supabase.auth.getSession();
-        const userId = session?.user?.id;
-        if (!userId) return;
-        window.localStorage.setItem('grantflow.userId', userId);
+        const profile = await fetchOrganizationProfile(userId);
 
-        // Load profile from Supabase if localStorage is empty
-        if (!window.localStorage.getItem(PROFILE_STORAGE_KEY)) {
-          const profile = await fetchOrganizationProfile(userId);
-          if (profile?.organization_profile) {
-            window.localStorage.setItem(PROFILE_STORAGE_KEY, profile.organization_profile);
-          }
+        if (!profile) return;
+
+        if (profile.organization_name) setOrganizationName(profile.organization_name);
+
+        const localProfile = window.localStorage.getItem(PROFILE_STORAGE_KEY) || '';
+
+        if (profile.organization_name && !localProfile) {
+          window.localStorage.setItem(PROFILE_STORAGE_KEY, profile.organization_name);
         }
       } catch (e) {
-        console.warn('Could not hydrate localStorage from Supabase:', e);
+        console.warn('Could not load organization profile from Supabase:', e);
       }
     })();
-  }, []);
+  }, [session?.user?.id]);
 
   const [showEINModal, setShowEINModal] = useState(false);
   const [einValue, setEINValue] = useState('');
@@ -277,10 +305,6 @@ export default function ProfileView({
         return;
       }
 
-      if (typeof window !== 'undefined') {
-        window.localStorage.setItem('grantflow.userId', userId);
-      }
-
       const docs = await getUserDocuments(userId);
       setSavedDocuments((docs || []) as SavedDocument[]);
     } catch (error) {
@@ -305,22 +329,6 @@ export default function ProfileView({
       JSON.stringify(savedDocuments.map((doc) => doc.filename).filter(Boolean))
     );
   }, [savedDocuments]);
-
-  useEffect(() => {
-    if (typeof window === 'undefined') return;
-
-    const syncUser = () => {
-      setConnectedUserId(window.localStorage.getItem('grantflow.userId') || '');
-    };
-
-    syncUser();
-    window.addEventListener('storage', syncUser);
-    window.addEventListener('focus', syncUser);
-    return () => {
-      window.removeEventListener('storage', syncUser);
-      window.removeEventListener('focus', syncUser);
-    };
-  }, []);
 
   const handleDeleteSavedDocument = useCallback(async (documentId: string, filename: string) => {
     const confirmed = window.confirm(`Remove "${filename}" from this account?`);
@@ -414,8 +422,7 @@ export default function ProfileView({
 
   const selectedModule =
     PROFILE_MODULES.find((module) => module.id === activeModule) ?? PROFILE_MODULES[0];
-  const isConnected = Boolean(connectedUserId);
-  const organizationName = extractOrganizationName(organizationProfile) || 'your organization';
+  const displayOrganizationName = organizationName.trim() || 'your organization';
 
   if (!showUpload) {
     return (
@@ -465,6 +472,9 @@ export default function ProfileView({
                       }
                       const { orgName, text } = await lookupEIN(einValue);
 
+                      const einOrgName = orgName?.trim() || extractOrganizationName(text);
+                      if (einOrgName) setOrganizationName(einOrgName);
+
                       syncToLocalStorage(text, [...savedDocuments.map(d => d.filename), `EIN-${einValue.replace(/\D/g, '')}.txt`].filter(Boolean));
 
                       const cleanEIN = einValue.replace(/\D/g, '');
@@ -496,25 +506,25 @@ export default function ProfileView({
             </div>
           </div>
         )}
-        <div className={`profile-landing-grid ${isConnected ? '' : 'profile-landing-grid--solo'}`}>
+        <div className={`profile-landing-grid ${isLoggedIn ? '' : 'profile-landing-grid--solo'}`}>
           <div className="profile-landing-main">
             <div className="profile-landing-panel">
               <div className="profile-hero-shell">
-                <p className="profile-hero-kicker">Organization profile</p>
+                <p className="profile-hero-kicker">${displayOrganizationName}</p>
                 <h2 className="empty-state-title profile-hero-title">
-                  {isConnected
-                    ? `Welcome back, ${organizationName}.`
+                  {isLoggedIn
+                    ? `Welcome back, ${displayOrganizationName}.`
                     : 'Turn the documents your nonprofit already has into reusable grant context.'}
                 </h2>
                 <p className="empty-state-description profile-hero-description">
-                  {isConnected
+                  {isLoggedIn
                     ? 'Here is the shared organization context your team can keep current and reuse across applications.'
                     : 'Build one organization profile for better-fit discovery, faster drafting, and less repeated application work across every new opportunity.'}
                 </p>
               </div>
               <div className="empty-state-actions">
                 <button className="btn-primary btn-primary--hero" onClick={() => setShowUpload(true)}>
-                  <span>{isConnected ? 'Add more documents' : 'Upload documents'}</span>
+                  <span>{isLoggedIn ? 'Add more documents' : 'Upload documents'}</span>
                   <span className="btn-arrow" aria-hidden="true">↗</span>
                 </button>
                 <button className="btn-secondary btn-secondary--hero">
@@ -527,14 +537,14 @@ export default function ProfileView({
                 describe your mission and programs.
               </p>
               <div className="profile-hero-inline-note">
-                <span className="profile-hero-inline-badge">{isConnected ? 'Account ready' : 'Built for lean teams'}</span>
+                <span className="profile-hero-inline-badge">{isLoggedIn ? 'Account ready' : 'Built for lean teams'}</span>
                 <p className="profile-hero-inline-copy">
-                  {isConnected
+                  {isLoggedIn
                     ? 'Upload new materials as they come in and keep the profile current for the next application.'
                     : 'Centralize the details that repeat across every grant so search and application work starts from context, not from zero.'}
                 </p>
               </div>
-              {!isConnected && (
+              {!isLoggedIn && (
                 <>
                   <div className="profile-stats-strip">
                     {HERO_STATS.map((stat) => (
@@ -554,14 +564,14 @@ export default function ProfileView({
             </div>
           </div>
 
-          {isConnected && (
+          {isLoggedIn && (
             <div className="profile-landing-side">
               {savedDocumentsSection}
             </div>
           )}
         </div>
 
-        {!isConnected && (
+        {!isLoggedIn && (
           <section className="profile-proof">
             <div className="profile-proof-lead">
               <p className="profile-proof-kicker">Why teams keep using GrantFlow</p>
@@ -632,12 +642,12 @@ export default function ProfileView({
           </section>
         )}
 
-        <div className={`profile-interaction-grid ${isConnected ? 'profile-interaction-grid--solo' : ''}`}>
+        <div className={`profile-interaction-grid ${isLoggedIn ? 'profile-interaction-grid--solo' : ''}`}>
             <section className="profile-module-card">
               <div className="profile-module-header">
-                <p className="profile-proof-kicker">{isConnected ? 'Inside your profile' : 'Explore the profile'}</p>
+                <p className="profile-proof-kicker">{isLoggedIn ? 'Inside your profile' : 'Explore the profile'}</p>
                 <h4 className="profile-module-title">
-                  {isConnected ? 'See what your team can keep organized in one place.' : 'See what GrantFlow organizes behind the scenes.'}
+                  {isLoggedIn ? 'See what your team can keep organized in one place.' : 'See what GrantFlow organizes behind the scenes.'}
                 </h4>
               </div>
               <div className="profile-module-tabs" role="tablist" aria-label="Profile capabilities">
@@ -666,7 +676,7 @@ export default function ProfileView({
               </div>
             </section>
 
-            {!isConnected && (
+            {!isLoggedIn && (
               <section className="profile-faq-card">
                 <div className="profile-module-header">
                   <p className="profile-proof-kicker">Common questions</p>
@@ -823,7 +833,7 @@ export default function ProfileView({
                     }
                   }
 
-                  // Upload each file to Supabase Storage + documents table when user is available
+                  // Upload, chunk, embed (Python service), and persist document_chunks
                   if (userId) {
                     for (const { file } of files) {
                       try {
@@ -832,18 +842,14 @@ export default function ProfileView({
                         console.warn('Supabase upload failed for', file.name, uploadErr);
                         warnings.push(
                           uploadErr instanceof Error
-                            ? `${file.name} could not be saved to cloud storage, but the document was still analyzed.`
-                            : 'One or more files could not be saved to your account, but extraction will continue.'
+                            ? `${file.name} could not be saved to cloud storage.`
+                            : 'One or more files could not be saved to your account.'
                         );
                       }
                     }
+                  } else {
+                    await extractDocuments(files.map((f) => f.file));
                   }
-
-                  const accessToken = session?.access_token;
-                  await extractDocuments(
-                    files.map((f) => f.file),
-                    accessToken ? { accessToken } : undefined
-                  );
 
                   await loadSavedDocuments();
                   setSaveSuccess(`Saved your files and updated your organization profile from ${files.length} document${files.length === 1 ? '' : 's'}.`);
@@ -860,7 +866,7 @@ export default function ProfileView({
                 }
               }}
             >
-              {extracting ? 'Analyzing with AI…' : '✨ Analyze with AI'}
+              {extracting ? 'Uploading files…' : 'Upload files'}
             </button>
             {extractError && (
               <p className="upload-error" role="alert">

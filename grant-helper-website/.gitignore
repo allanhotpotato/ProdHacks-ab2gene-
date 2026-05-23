@@ -10,6 +10,8 @@ pnpm-debug.log*
 lerna-debug.log*
 
 node_modules
+embedding-service/.venv/
+embedding-service/__pycache__/
 dist
 dist-server/
 dist-ssr

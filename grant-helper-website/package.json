@@ -6,14 +6,16 @@
   "scripts": {
     "dev": "vite",
     "dev:server": "tsx server/index.ts",
-    "dev:all": "concurrently -n s,v \"npm run dev:server\" \"vite\"",
+    "setup:embed": "cd embedding-service && python3 -m venv .venv && .venv/bin/pip install -r requirements.txt",
+    "dev:embed": "cd embedding-service && .venv/bin/python -m uvicorn main:app --host 127.0.0.1 --port 8000",
+    "dev:embed:watch": "cd embedding-service && .venv/bin/python -m uvicorn main:app --reload --reload-include main.py --host 127.0.0.1 --port 8000",
+    "dev:all": "concurrently -n e,s,v \"npm run dev:embed\" \"npm run dev:server\" \"vite\"",
     "build": "tsc -b && vite build",
     "lint": "eslint .",
     "preview": "vite preview"
   },
   "dependencies": {
     "@google/generative-ai": "^0.21.0",
-    "@huggingface/transformers": "^4.1.0",
     "@supabase/supabase-js": "^2.97.0",
     "cors": "^2.8.5",
     "dotenv": "^16.4.5",

@@ -13,6 +13,7 @@
  */
 
 import { createClient } from '@supabase/supabase-js';
+import { extractDocuments } from '../api/extractDocuments';
 
 // These would be set in production .env:
 // VITE_SUPABASE_URL=https://your-project.supabase.co
@@ -33,36 +34,60 @@ function requireSupabase() {
 }
 
 /**
- * Upload a file to Supabase Storage
- * @param file - File object to upload
- * @param userId - User ID (from auth.user())
- * @returns Storage path if successful
+ * Upload a file to Supabase Storage, then chunk + embed via the API server (Python)
+ * and insert rows into `document_chunks`.
  */
-export async function uploadToSupabase(file: File, userId: string): Promise<string> {
+export async function uploadToSupabase(file: File, userId: string): Promise<void> {
   const client = requireSupabase();
   const documentId = crypto.randomUUID();
   const storagePath = `${userId}/${documentId}/${file.name}`;
 
-  // Upload to Storage
   const { error: uploadError } = await client.storage
     .from('user-docs')
     .upload(storagePath, file);
 
   if (uploadError) throw uploadError;
 
-  // Insert metadata into documents table
   const { error: dbError } = await client.from('documents').insert({
+    id: documentId,
     user_id: userId,
     filename: file.name,
-    mime_type: file.type,
+    mime_type: file.type || 'application/octet-stream',
     storage_path: storagePath,
     file_size_bytes: file.size,
-    status: 'uploaded',
+    status: 'processing',
   });
 
   if (dbError) throw dbError;
 
-  return storagePath;
+  const { data: sessionData } = await client.auth.getSession();
+  const accessToken = sessionData.session?.access_token;
+
+  if (accessToken) {
+    try {
+      await extractDocuments([file], {
+        accessToken,
+        documentIds: [documentId],
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Chunking or embedding failed';
+      await client
+        .from('documents')
+        .update({ status: 'failed', error: message })
+        .eq('id', documentId)
+        .eq('user_id', userId);
+      throw err;
+    }
+  } else {
+    console.warn(
+      'uploadToSupabase: no auth session; file stored but document_chunks were not created'
+    );
+    await client
+      .from('documents')
+      .update({ status: 'uploaded' })
+      .eq('id', documentId)
+      .eq('user_id', userId);
+  }
 }
 
 /**
@@ -137,26 +162,28 @@ export async function deleteDocument(documentId: string) {
 }
 
 export type OrganizationProfileRow = {
+  full_name: string;
   organization_name: string;
-  organization_profile: string;
 };
 
 export async function fetchOrganizationProfile(
   userId: string
 ): Promise<OrganizationProfileRow | null> {
-  const { data, error } = await supabase
+  const client = requireSupabase();
+  const { data, error } = await client
     .from('profiles')
-    .select('organization_name, organization_profile')
+    .select('full_name, organization_name')
     .eq('id', userId)
     .maybeSingle();
-
+  
   if (error) throw error;
   return data;
 }
 
 /** Ensures a row exists (e.g. if signup predates the org-profile migration). */
 export async function ensureOrganizationProfileRow(userId: string): Promise<void> {
-  const { data: existing } = await supabase
+  const client = requireSupabase();
+  const { data: existing } = await client
     .from('profiles')
     .select('id')
     .eq('id', userId)
@@ -164,7 +191,7 @@ export async function ensureOrganizationProfileRow(userId: string): Promise<void
 
   if (existing) return;
 
-  const { error } = await supabase.from('profiles').insert({
+  const { error } = await client.from('profiles').insert({
     id: userId,
     organization_name: 'My organization',
     organization_profile: '',
@@ -174,7 +201,8 @@ export async function ensureOrganizationProfileRow(userId: string): Promise<void
 }
 
 export async function saveOrganizationProfileText(userId: string, text: string): Promise<void> {
-  const { error } = await supabase
+  const client = requireSupabase();
+  const { error } = await client
     .from('profiles')
     .update({ organization_profile: text })
     .eq('id', userId);
