@@ -169,7 +169,8 @@ export type OrganizationProfileRow = {
 export async function fetchOrganizationProfile(
   userId: string
 ): Promise<OrganizationProfileRow | null> {
-  const { data, error } = await supabase
+  const client = requireSupabase();
+  const { data, error } = await client
     .from('profiles')
     .select('organization_name, organization_profile')
     .eq('id', userId)
@@ -181,7 +182,8 @@ export async function fetchOrganizationProfile(
 
 /** Ensures a row exists (e.g. if signup predates the org-profile migration). */
 export async function ensureOrganizationProfileRow(userId: string): Promise<void> {
-  const { data: existing } = await supabase
+  const client = requireSupabase();
+  const { data: existing } = await client
     .from('profiles')
     .select('id')
     .eq('id', userId)
@@ -189,7 +191,7 @@ export async function ensureOrganizationProfileRow(userId: string): Promise<void
 
   if (existing) return;
 
-  const { error } = await supabase.from('profiles').insert({
+  const { error } = await client.from('profiles').insert({
     id: userId,
     organization_name: 'My organization',
     organization_profile: '',
@@ -199,7 +201,8 @@ export async function ensureOrganizationProfileRow(userId: string): Promise<void
 }
 
 export async function saveOrganizationProfileText(userId: string, text: string): Promise<void> {
-  const { error } = await supabase
+  const client = requireSupabase();
+  const { error } = await client
     .from('profiles')
     .update({ organization_profile: text })
     .eq('id', userId);
