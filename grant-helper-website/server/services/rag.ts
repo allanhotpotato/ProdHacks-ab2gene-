@@ -1,4 +1,4 @@
-import { embedTextsWithTransformers } from './embeddings.js';
+import { embedTexts } from './embeddings.js';
 import { createUserSupabaseClient } from './documents.js';
 
 export function parseEmbeddingColumn(raw: unknown): number[] | null {
@@ -72,7 +72,7 @@ export async function retrieveRelevantChunksForQuery(accessToken: string, userQu
 
   let queryEmbedding: number[] | undefined;
   try {
-    const result = await embedTextsWithTransformers([q]);
+    const result = await embedTexts([q]);
     queryEmbedding = result?.[0];
   } catch (e) {
     console.warn('RAG chat: query embedding failed:', e);

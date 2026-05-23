@@ -1,10 +1,16 @@
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
 import OpenAI from 'openai';
 
-/** Default: ONNX MiniLM (384-d). Override with RAG_EMBEDDING_MODEL. First run downloads model weights. */
-export const RAG_EMBEDDING_MODEL =
-  process.env.RAG_EMBEDDING_MODEL?.trim() || 'onnx-community/all-MiniLM-L6-v2-ONNX';
-/** Set RAG_EMBEDDINGS_DISABLED=1 on tiny serverless bundles (e.g. strict size limits); chunk text + insert still works without vectors. */
+/** Python FastAPI embedding service (sentence-transformers/all-MiniLM-L6-v2). Run: npm run dev:embed */
+export const EMBEDDING_SERVICE_URL =
+  process.env.EMBEDDING_SERVICE_URL?.trim() || 'http://127.0.0.1:8000';
+
+export const EMBEDDING_SERVICE_TIMEOUT_MS = Math.max(
+  5000,
+  Number(process.env.EMBEDDING_SERVICE_TIMEOUT_MS) || 120_000
+);
+
+/** Set RAG_EMBEDDINGS_DISABLED=1 to skip embedding calls; chunk text + insert still works without vectors. */
 export const RAG_EMBEDDINGS_DISABLED =
   process.env.RAG_EMBEDDINGS_DISABLED === '1' || /^true$/i.test(process.env.RAG_EMBEDDINGS_DISABLED ?? '');
 
@@ -57,7 +63,3 @@ Keep the tone confident, professional, and human.
 export const CHUNK_CHAR_SIZE = Number(process.env.RAG_CHUNK_CHAR_SIZE) || 1500;
 export const CHUNK_OVERLAP = Number(process.env.RAG_CHUNK_OVERLAP) || 200;
 
-export const RAG_EMBEDDING_BATCH_SIZE = Math.max(
-  1,
-  Math.min(32, Number(process.env.RAG_EMBEDDING_BATCH_SIZE) || 8)
-);

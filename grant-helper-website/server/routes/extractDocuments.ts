@@ -1,7 +1,7 @@
 import { Router, Request, Response } from 'express';
 import { upload } from '../middleware/upload.js';
 import { CHUNK_CHAR_SIZE, CHUNK_OVERLAP } from '../config.js';
-import { embedTextsWithTransformers } from '../services/embeddings.js';
+import { embedTexts } from '../services/embeddings.js';
 import {
   createUserSupabaseClient,
   extractTextFromFile,
@@ -79,7 +79,7 @@ router.post('/', upload.array('files', 20), async (req: Request, res: Response):
         const chunks = splitTextIntoChunks(trimmed, CHUNK_CHAR_SIZE, CHUNK_OVERLAP);
         if (!chunks.length) continue;
 
-        const embeddings = await embedTextsWithTransformers(chunks);
+        const embeddings = await embedTexts(chunks);
 
         await persistChunksAndEmbeddings(userClient, userId, docId!, file.originalname, chunks, embeddings);
         chunksInserted += chunks.length;

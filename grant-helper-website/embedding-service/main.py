@@ -1,6 +1,9 @@
 """
 Local embedding HTTP service for the grant-helper Node API.
-Uses sentence-transformers (MiniLM L6 v2, 384-d) — compatible with existing document_chunks vectors.
+
+The Node server (server/services/embeddings.ts) POSTs JSON to /embed and uses vectors
+for RAG (document upload indexing + chat retrieval). Same model family as before:
+sentence-transformers/all-MiniLM-L6-v2 (384 dimensions, L2-normalized).
 """
 
 import os

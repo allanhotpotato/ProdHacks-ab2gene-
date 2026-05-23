@@ -1,75 +1,83 @@
-import type { FeatureExtractionPipeline, Tensor } from '@huggingface/transformers';
-import { RAG_EMBEDDING_BATCH_SIZE, RAG_EMBEDDING_MODEL, RAG_EMBEDDINGS_DISABLED } from '../config.js';
+import {
+  EMBEDDING_SERVICE_TIMEOUT_MS,
+  EMBEDDING_SERVICE_URL,
+  RAG_EMBEDDINGS_DISABLED,
+} from '../config.js';
 
-let embeddingExtractorPromise: Promise<FeatureExtractionPipeline> | null = null;
+interface EmbedApiResponse {
+  embeddings: number[][];
+  model: string;
+}
 
-function rowsFromEmbeddingTensor(tensor: Tensor): number[][] {
-  const dims = tensor.dims;
-  const nested = tensor.tolist() as unknown;
-  if (dims.length === 1) {
-    const row = nested as number[];
-    return [row.map((x) => Number(x))];
+async function postEmbed(texts: string[]): Promise<number[][]> {
+  const url = `${EMBEDDING_SERVICE_URL.replace(/\/$/, '')}/embed`;
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ texts }),
+    signal: AbortSignal.timeout(EMBEDDING_SERVICE_TIMEOUT_MS),
+  });
+
+  if (!res.ok) {
+    const body = await res.text().catch(() => '');
+    throw new Error(`Embedding service ${res.status}: ${body || res.statusText}`);
   }
-  if (dims.length === 2) {
-    const outer = nested as unknown[];
-    return outer.map((row) =>
-      Array.isArray(row) ? row.map((x) => Number(x)) : [Number(row)]
+
+  const data = (await res.json()) as EmbedApiResponse;
+  if (!Array.isArray(data.embeddings) || data.embeddings.length !== texts.length) {
+    throw new Error(
+      `Embedding service returned ${data.embeddings?.length ?? 0} vectors for ${texts.length} texts`
     );
   }
-  return [];
+  return data.embeddings;
 }
 
-async function loadEmbeddingExtractor(): Promise<FeatureExtractionPipeline> {
-  if (embeddingExtractorPromise) return embeddingExtractorPromise;
-  embeddingExtractorPromise = (async () => {
-    const { pipeline } = await import('@huggingface/transformers');
-    console.info(`RAG: loading embedding model "${RAG_EMBEDDING_MODEL}"…`);
-    return pipeline('feature-extraction', RAG_EMBEDDING_MODEL) as Promise<FeatureExtractionPipeline>;
-  })().catch((err) => {
-    embeddingExtractorPromise = null;
-    throw err;
-  });
-  return embeddingExtractorPromise;
-}
-
-/** Mean-pooled, L2-normalized embeddings via Hugging Face Transformers.js (ONNX). Returns null if disabled or model load fails. */
-export async function embedTextsWithTransformers(texts: string[]): Promise<number[][] | null> {
+/**
+ * Embed texts via the Python sentence-transformers service (MiniLM L6 v2, 384-d).
+ * Returns null if disabled, on service failure, or when the service is unreachable.
+ * Empty/whitespace inputs get [] at the same index (no API call for those slots).
+ */
+export async function embedTexts(texts: string[]): Promise<number[][] | null> {
   if (RAG_EMBEDDINGS_DISABLED) return null;
   if (!texts.length) return [];
 
+  const result: number[][] = texts.map(() => []);
+  const batch: { index: number; text: string }[] = [];
+
+  for (let i = 0; i < texts.length; i++) {
+    const t = texts[i]?.trim() ?? '';
+    if (t) batch.push({ index: i, text: t });
+  }
+
+  if (!batch.length) return result;
+
   try {
-    const extractor = await loadEmbeddingExtractor();
-    const result: number[][] = texts.map(() => []);
-
-    for (let start = 0; start < texts.length; start += RAG_EMBEDDING_BATCH_SIZE) {
-      const end = Math.min(start + RAG_EMBEDDING_BATCH_SIZE, texts.length);
-      const batchIdx: number[] = [];
-      const batchStr: string[] = [];
-      for (let i = start; i < end; i++) {
-        const t = texts[i]?.trim() ?? '';
-        if (t) {
-          batchIdx.push(i);
-          batchStr.push(t);
-        }
-      }
-      if (!batchStr.length) continue;
-
-      const tensor = await extractor(batchStr, { pooling: 'mean', normalize: true });
-      const rows = rowsFromEmbeddingTensor(tensor);
-      if (rows.length !== batchStr.length) {
-        console.warn(
-          `RAG: embedding batch shape mismatch (got ${rows.length} rows, expected ${batchStr.length})`
-        );
-        return null;
-      }
-      for (let j = 0; j < batchIdx.length; j++) {
-        result[batchIdx[j]] = rows[j] ?? [];
-      }
+    const vectors = await postEmbed(batch.map((b) => b.text));
+    for (let j = 0; j < batch.length; j++) {
+      result[batch[j].index] = vectors[j] ?? [];
     }
-
     return result;
   } catch (e) {
-    console.warn('embedTextsWithTransformers:', e);
+    console.warn(
+      'embedTexts: Python embedding service failed. Is it running?',
+      EMBEDDING_SERVICE_URL,
+      e instanceof Error ? e.message : e
+    );
     return null;
+  }
+}
+
+// export const embedTextsWithTransformers = embedTexts;
+
+/** Ping GET /health — useful for startup diagnostics */
+export async function checkEmbeddingServiceHealth(): Promise<boolean> {
+  try {
+    const url = `${EMBEDDING_SERVICE_URL.replace(/\/$/, '')}/health`;
+    const res = await fetch(url, { signal: AbortSignal.timeout(5000) });
+    if (!res.ok) return false;
+    const data = (await res.json()) as { ok?: boolean };
+    return data.ok === true;
+  } catch {
+    return false;
   }
 }
