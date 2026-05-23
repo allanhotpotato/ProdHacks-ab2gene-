@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect } from 'react';
 import { postChat, type ChatMessage } from '../../api/chat';
+import { useSupabaseAuth } from '../../hooks/useSupabaseAuth';
 import './GrantChat.css';
 
 interface GrantChatProps {
@@ -9,7 +10,8 @@ interface GrantChatProps {
   onClose: () => void;
 }
 
-export default function GrantChat({ grantTitle, grantContext, profileContext = '', onClose }: GrantChatProps) {
+export default function GrantChat({ grantTitle, grantContext, onClose }: GrantChatProps) {
+  const { session } = useSupabaseAuth();
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
@@ -35,7 +37,11 @@ export default function GrantChat({ grantTitle, grantContext, profileContext = '
 
     try {
       const nextHistory = [...messages, userMessage];
-      const { reply } = await postChat({ grantContext, profileContext, messages: nextHistory });
+      const { reply } = await postChat({
+        grantContext,
+        messages: nextHistory,
+        accessToken: session?.access_token,
+      });
       setMessages((prev) => [...prev, { role: 'model', content: reply }]);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to get reply');

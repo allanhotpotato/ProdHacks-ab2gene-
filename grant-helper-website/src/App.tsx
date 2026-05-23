@@ -1,71 +1,87 @@
-import { useEffect, useState } from 'react'
-import Layout from './components/layout/Layout'
-import ProfileView from './components/pages/ProfileView'
-import SearchView from './components/pages/SearchView'
-import WorkspaceView from './components/pages/WorkspaceView'
-import './App.css'
+import { useState } from 'react';
+import Layout from './components/layout/Layout';
+import ProfileView from './components/pages/ProfileView';
+import SearchView from './components/pages/SearchView';
+import WorkspaceView from './components/pages/WorkspaceView';
+import AuthPage from './components/pages/AuthPage';
+// ProfileView loads documents and profile from Supabase / localStorage directly.
+import { useSupabaseAuth } from './hooks/useSupabaseAuth';
+import './App.css';
 
-const PROFILE_STORAGE_KEY = 'grantflow.organizationProfile'
-const PROFILE_SUMMARY_STORAGE_KEY = 'grantflow.profileSummary'
+// const PROFILE_STORAGE_KEY = 'grantflow.organizationProfile';
+// const PROFILE_SUMMARY_STORAGE_KEY = 'grantflow.profileSummary';
 
-function buildProfileSummary(profile: string) {
-  const trimmed = profile.trim()
-  const preview = trimmed.slice(0, 320)
-  const sentenceCount = trimmed ? trimmed.split(/[.!?]+/).filter(Boolean).length : 0
+// function buildProfileSummary(profile: string) {
+//   const trimmed = profile.trim();
+//   const preview = trimmed.slice(0, 320);
+//   const sentenceCount = trimmed ? trimmed.split(/[.!?]+/).filter(Boolean).length : 0;
 
-  return {
-    preview,
-    characters: trimmed.length,
-    sentences: sentenceCount,
-    updatedAt: new Date().toISOString(),
-  }
-}
+//   return {
+//     preview,
+//     characters: trimmed.length,
+//     sentences: sentenceCount,
+//     updatedAt: new Date().toISOString(),
+//   };
+// }
 
 function App() {
-  const [activeView, setActiveView] = useState('profile')
-  const [organizationProfile, setOrganizationProfile] = useState(() => {
-    if (typeof window === 'undefined') return ''
-    return window.localStorage.getItem(PROFILE_STORAGE_KEY) || ''
-  })
+  const { session, loading: authLoading, supabaseConfigured } = useSupabaseAuth();
+  const [activeView, setActiveView] = useState('profile');
+  // organizationProfile now managed via localStorage by ProfileView
+  // SearchView reads organization profile from localStorage
+  const profileReady = !supabaseConfigured || !!session?.user;
 
-  useEffect(() => {
-    if (typeof window === 'undefined') return
+  // useEffect(() => {
+  //   if (!supabaseConfigured || !session?.user || !profileReady) return;
 
-    window.localStorage.setItem(PROFILE_STORAGE_KEY, organizationProfile)
-    window.localStorage.setItem(
-      PROFILE_SUMMARY_STORAGE_KEY,
-      JSON.stringify(buildProfileSummary(organizationProfile))
-    )
-  }, [organizationProfile])
+  //   const id = session.user.id;
+  //   const t = window.setTimeout(() => {
+  //     saveOrganizationProfileText(id, organizationProfile).catch((e) =>
+  //       console.warn('Failed to save organization profile', e)
+  //     );
+  //   }, 800);
+
+  //   return () => window.clearTimeout(t);
+  // }, [organizationProfile, session, supabaseConfigured, profileReady]);
+
+  if (supabaseConfigured && authLoading) {
+    return (
+      <div className="app-auth-loading" role="status" aria-live="polite">
+        Loading…
+      </div>
+    );
+  }
+
+  if (supabaseConfigured && !session) {
+    return <AuthPage />;
+  }
+
+  if (supabaseConfigured && session && !profileReady) {
+    return (
+      <div className="app-auth-loading" role="status" aria-live="polite">
+        Loading your profile…
+      </div>
+    );
+  }
 
   const renderView = () => {
     switch (activeView) {
       case 'profile':
-        return (
-          <ProfileView
-            organizationProfile={organizationProfile}
-            onOrganizationProfileChange={setOrganizationProfile}
-          />
-        )
+        return <ProfileView />;
       case 'search':
-        return <SearchView organizationProfile={organizationProfile} />
+        return <SearchView />;
       case 'workspace':
-        return <WorkspaceView organizationProfile={organizationProfile} />
+        return <WorkspaceView />;
       default:
-        return (
-          <ProfileView
-            organizationProfile={organizationProfile}
-            onOrganizationProfileChange={setOrganizationProfile}
-          />
-        )
+        return <ProfileView />;
     }
-  }
+  };
 
   return (
     <Layout activeView={activeView} onNavigate={setActiveView}>
       {renderView()}
     </Layout>
-  )
+  );
 }
 
-export default App
+export default App;

@@ -14,19 +14,25 @@ export interface PostChatOptions {
   grantContext: string;
   profileContext?: string;
   messages: ChatMessage[];
+  /** Supabase session access token — enables server-side embedding retrieval over document_chunks */
+  accessToken?: string | null;
 }
 
 export async function postChat({
   grantContext,
-  profileContext = '',
   messages,
+  accessToken,
 }: PostChatOptions): Promise<{ reply: string }> {
   let res: Response;
   try {
+    const body: Record<string, unknown> = { grantContext, messages };
+    if (accessToken) {
+      body.accessToken = accessToken;
+    }
     res = await fetch('/api/chat', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ grantContext, profileContext, messages }),
+      body: JSON.stringify(body),
     });
   } catch {
     throw new Error(SERVER_UNREACHABLE_MSG);
