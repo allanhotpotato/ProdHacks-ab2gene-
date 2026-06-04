@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import type { Session } from '@supabase/supabase-js';
-import { supabase } from '../config/supabase';
+import { requireSupabase } from '../config/supabase';
 
 export function isSupabaseConfigured(): boolean {
   return !!(
@@ -13,6 +13,8 @@ export function useSupabaseAuth() {
   const configured = isSupabaseConfigured();
   const [session, setSession] = useState<Session | null>(null);
   const [loading, setLoading] = useState(() => configured);
+
+  const supabase = requireSupabase();
 
   useEffect(() => {
     if (!configured) return;

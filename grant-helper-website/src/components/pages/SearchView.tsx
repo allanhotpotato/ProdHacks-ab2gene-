@@ -185,10 +185,12 @@ export default function SearchView({ organizationProfile: profileProp }: SearchV
       return;
     }
 
+    console.log(query);
     const rawQuery = mode === 'recommended'
       ? recommendedQuery
       : (query.trim() || recommendedQuery);
     const candidates = buildSearchCandidates(rawQuery, recommendedQuery);
+    console.log(candidates);
     const baseQuery = candidates[0] || 'education youth';
 
     setQuery(baseQuery);
@@ -203,6 +205,8 @@ export default function SearchView({ organizationProfile: profileProp }: SearchV
         searchOpportunities({ query: searchQuery, pagination: { page_offset: 1, page_size: 10 } }),
         fetch(`/api/grants/catalog?q=${encodeURIComponent(searchQuery)}&limit=15`).then(r => r.json()),
       ]);
+
+      console.log("Did API call");
 
       const grantsGovGrants = grantsGovResult.status === 'fulfilled' ? (grantsGovResult.value.data ?? []) : [];
       const catalogGrants = catalogResult.status === 'fulfilled' ? (catalogResult.value.data ?? []) : [];
@@ -225,6 +229,8 @@ export default function SearchView({ organizationProfile: profileProp }: SearchV
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ organizationProfile, grants: merged, topN: merged.length }),
           });
+
+          console.log("Did smart match API call");
           if (matchResponse.ok) {
             const { matches } = await matchResponse.json();
             setOpportunities(matches);

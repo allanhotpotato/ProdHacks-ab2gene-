@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { supabase } from '../../config/supabase';
+import { requireSupabase } from '../../config/supabase';
 import './AuthPage.css';
 
 type Mode = 'login' | 'register' | 'forgot';
@@ -13,6 +13,8 @@ export default function AuthPage() {
   const [submitting, setSubmitting] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+
+  const supabase = requireSupabase();
 
   const resetFeedback = () => {
     setMessage(null);
